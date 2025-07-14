@@ -44,7 +44,8 @@ const STANDARDIZED_DOC_TYPE_MAP = {
 
 const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
 const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
-const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
+const REGIONS = ["NAMER"];
+// const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
 const TERM_OPTIONS = [1, 2, 3];
 const DAYS_NOTICE = [30, 60, 90];
 const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
@@ -94,6 +95,7 @@ function submitSampleRequest(e) {
         Logger.log("Function called without a valid event trigger.");
         return;
     }
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
 
     const spreadsheet = e.source;
     const sheet = spreadsheet.getActiveSheet();
@@ -163,10 +165,24 @@ function submitSampleRequest(e) {
             }
 
             for (let i = 0; i < numSets; i++) {
-                const setCounterparty = COUNTERPARTIES[i % COUNTERPARTIES.length];
+                // CORRECT: `parentMsaData` is declared here, visible to the entire set.
+                let parentMsaData = {};
+                const setCounterparty = pick(COUNTERPARTIES);
                 for (const docType of DOCUMENT_SET_TYPES) {
-                    const rowData = generateSetDocumentRow(requestData, docType, setCounterparty);
-                    processAndCreateFile(rowData, subfolder);
+                    const docData = generateSetDocumentRow(requestData, docType, setCounterparty);
+
+                    if (docType.includes("MSA")) {
+                        docData.contractNumber = generateContractNumber();
+                        // This assigns the MSA data to the variable.
+                        parentMsaData = docData;
+                    } else if (docType.includes("SOW") || docType.includes("Change Order")) {
+                        // This will now work, because `parentMsaData` was defined outside this block
+                        // and has already been assigned the MSA's data.
+                        docData.parentMsaContractNumber = parentMsaData.contractNumber;
+                        docData.parentMsaDate = Utilities.formatDate(parentMsaData.effectiveDate, Session.getScriptTimeZone(), "MM/dd/yyyy");
+                    }
+                    Logger.log("Doc Data: " + docData);
+                    processAndCreateFile(docData, subfolder);
                 }
             }
             successMessage = `Success! ${docCount} documents (${numSets} sets) created.`;
@@ -175,8 +191,8 @@ function submitSampleRequest(e) {
             // WORKFLOW 2: CREATE INDIVIDUAL RANDOM DOCUMENTS
             const docCount = requestData.quantity;
             for (let i = 0; i < docCount; i++) {
-                const rowData = generateRandomDocumentRow(requestData);
-                processAndCreateFile(rowData, subfolder);
+                const docData = generateRandomDocumentRow(requestData);
+                processAndCreateFile(docData, subfolder);
             }
             successMessage = `Success! ${docCount} individual documents created.`;
         }
@@ -196,7 +212,7 @@ function submitSampleRequest(e) {
 /**
  * Builds the core array of details (dates, terms, etc.) for an agreement.
  * @param {string} agreementType The type of agreement being generated.
- * @return {Array<string>} An array of generated detail strings.
+ * @return {Object} An object containing the effectiveDate and an array of detail strings.
  */
 function buildAgreementDetails(agreementType) {
     const today = new Date();
@@ -238,13 +254,75 @@ function buildAgreementDetails(agreementType) {
             `Termination for Convenience Notice: ${pick(DAYS_NOTICE)} days`
         );
     }
-    return parts;
+
+    // Return an object containing both the date object and the parts array
+    return { effectiveDate: effectiveDate, parts: parts };
+}
+
+/**
+ * Generates a data OBJECT for a specific document within a set.
+ * @param {Object} requestData An object containing the user's request details.
+ * @param {string} agreementType The specific type of agreement to generate.
+ * @param {string} counterparty The specific counterparty for this document set.
+ * @return {Object} An object containing all generated data for the document.
+ */
+function generateSetDocumentRow(requestData, agreementType, counterparty) {
+    // Helpers
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+
+    // --- Get Core Details ---
+    // Call the helper, which now returns an object with the date and parts array
+    const detailsObject = buildAgreementDetails(agreementType);
+    const parts = detailsObject.parts;
+
+    // --- Add SOW-specific details if applicable ---
+    if (agreementType.includes("SOW")) {
+        const today = new Date();
+        const totalValue = Math.floor(Math.random() * 450000) + 50000;
+        const depositAmount = Math.floor(Math.random() * 20000) + 5000;
+        const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
+        const depositDue = addDays(today, Math.floor(Math.random() * 180));
+        const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
+
+        parts.push(
+            `Total Contract Value: $${totalValue.toLocaleString()} USD`,
+            `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
+            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`
+        );
+    }
+
+    // --- Add Obligation Text ---
+    const possible = OBLIGATIONS[agreementType] || []; // Uses global constant
+    const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
+    selected.forEach(key => {
+        if (OBL_TEXT[key]) { // Uses global constant
+            parts.push(OBL_TEXT[key]);
+        }
+    });
+
+    // --- Assemble and Return Final Data Object ---
+    const docData = {
+        email: requestData.email,
+        language: requestData.language,
+        firstParty: requestData.firstParty,
+        counterparty: counterparty,
+        agreementType: agreementType,
+        industry: pick(INDUSTRIES),   // Uses global constant
+        geography: pick(REGIONS),     // Uses global constant
+        specialInstructions: parts.join(", "),
+        effectiveDate: detailsObject.effectiveDate // The raw date object
+    };
+
+    return docData;
 }
 
 /**
  * Generates data for a single, random document using global constants.
  * @param {Object} requestData An object containing the user's request details.
- * @return {Array | null} An array of generated data for a single agreement, or null if no valid document types are found.
+ * @return {Object | null} An object containing all generated data for the document, or null.
  */
 function generateRandomDocumentRow(requestData) {
     // Helpers
@@ -256,6 +334,8 @@ function generateRandomDocumentRow(requestData) {
     // --- Select Random Document Type & Parties ---
     const firstParty = requestData.firstParty;
     const counterparty = pick(COUNTERPARTIES); // Uses global constant
+
+    Logger.log(`Generating random document for ${firstParty} with counterparty ${counterparty}`);
 
     const extractedTypes = extractDocTypes(requestData.docTypeString);
     const standardizedTypes = extractedTypes
@@ -269,8 +349,8 @@ function generateRandomDocumentRow(requestData) {
     const agreementType = pick(standardizedTypes);
 
     // --- Build Core Details ---
-    // Call the helper to get all the common date and term details
-    const parts = buildAgreementDetails(agreementType);
+    const detailsObject = buildAgreementDetails(agreementType);
+    const parts = detailsObject.parts;
 
     // --- Add SOW-specific details if applicable ---
     if (agreementType.includes("SOW")) {
@@ -289,115 +369,73 @@ function generateRandomDocumentRow(requestData) {
     }
 
     // --- Add Obligation Text ---
-    const possible = OBLIGATIONS[agreementType] || []; // Uses global constant
+    const possible = OBLIGATIONS[agreementType] || [];
     const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
     selected.forEach(key => {
-        if (OBL_TEXT[key]) { // Uses global constant
+        if (OBL_TEXT[key]) {
             parts.push(OBL_TEXT[key]);
         }
     });
 
-    // --- Finalize and Return ---
-    const specialInstructions = parts.join(", ");
-    const industry = pick(INDUSTRIES);   // Uses global constant
-    const geography = pick(REGIONS);     // Uses global constant
+    // --- Assemble and Return Final Data Object ---
+    const docData = {
+        email: requestData.email,
+        language: requestData.language,
+        firstParty: firstParty,
+        counterparty: counterparty,
+        agreementType: agreementType,
+        industry: pick(INDUSTRIES),
+        geography: pick(REGIONS),
+        specialInstructions: parts.join(", "),
+        effectiveDate: detailsObject.effectiveDate
+    };
 
-    return [
-        fmt(new Date()),
-        requestData.email,
-        agreementType,
-        specialInstructions,
-        requestData.language,
-        industry,
-        geography,
-        firstParty,
-        counterparty
-    ];
+    return docData;
 }
 
 /**
- * Generates data for a specific document within a set.
- * @param {Object} requestData An object containing the user's request details.
- * @param {string} agreementType The specific type of agreement to generate.
- * @param {string} counterparty The specific counterparty for this document set.
- * @return {Array} An array of generated data for a single agreement.
+ * Assembles the complete AI prompt by calling all modular helper functions.
+ * @param {Object} docData An object containing all data for a single document.
+ * @return {string} The final, complete prompt to be sent to the AI.
  */
-function generateSetDocumentRow(requestData, agreementType, counterparty) {
-    // Helpers
-    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
-    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
-    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+function createPrompt(docData) {
+    // Destructure all needed properties from the docData object
+    const {
+        agreementType, industry, geography, language, specialInstructions,
+        firstParty, counterparty, parentMsaContractNumber, parentMsaDate, contractNumber
+    } = docData;
 
-    // --- Use passed-in and request-specific data ---
-    const firstParty = requestData.firstParty;
-    // Note: agreementType and counterparty are received as arguments
-
-    // --- Build Core Details ---
-    // Call the helper to get all the common date and term details
-    const parts = buildAgreementDetails(agreementType);
-
-    // --- Add SOW-specific details if applicable ---
-    if (agreementType.includes("SOW")) {
-        const today = new Date();
-        const totalValue = Math.floor(Math.random() * 450000) + 50000;
-        const depositAmount = Math.floor(Math.random() * 20000) + 5000;
-        const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
-        const depositDue = addDays(today, Math.floor(Math.random() * 180));
-        const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
-
-        parts.push(
-            `Total Contract Value: $${totalValue.toLocaleString()} USD`,
-            `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
-            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`
-        );
+    Logger.log(`Inside createPrompt - agreementType=${agreementType}, firstParty=${firstParty}, parentMsaNum=${parentMsaContractNumber}, contractNumber=${contractNumber}`);
+    // --- Conditionally create a reference to the parent MSA ---
+    let msaReference = "";
+    if (parentMsaContractNumber) {
+        msaReference = `This document is governed by the Master Service Agreement (MSA) between the parties, dated ${parentMsaDate}, with Contract Number ${parentMsaContractNumber}. Ensure the terms of this document are consistent with the parent MSA.`;
     }
 
-    // --- Add Obligation Text ---
-    const possible = OBLIGATIONS[agreementType] || []; // Uses global constant
-    const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
-    selected.forEach(key => {
-        if (OBL_TEXT[key]) { // Uses global constant
-            parts.push(OBL_TEXT[key]);
-        }
-    });
+    // --- Conditionally create a display for the doc's own contract number ---
+    let contractNumberDisplay = "";
+    if (contractNumber) {
+        contractNumberDisplay = `Contract Number: ${contractNumber}`;
+    }
 
-    // --- Finalize and Return ---
-    const specialInstructions = parts.join(", ");
-    const industry = pick(INDUSTRIES); // Uses global constant
-    const geography = pick(REGIONS);   // Uses global constant
-
-    return [
-        fmt(new Date()),
-        requestData.email,
-        agreementType,
-        specialInstructions,
-        requestData.language,
-        industry,
-        geography,
-        firstParty,
-        counterparty
-    ];
-}
-
-function createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty) {
-
-    // 1. Call all the modular helper functions to get the prompt sections.
+    // --- Call all the modular helper functions ---
     const setup = getPromptSetup(agreementType, industry, geography);
-    const objective = getPromptObjective(firstParty);
-    const instructions = getPromptInstructions(firstParty);
+    const objective = getPromptObjective(industry, geography);
+    const instructions = getPromptInstructions();
     const generalRequirements = getPromptGeneralRequirements();
     const outputFormat = getPromptOutputFormat();
     const specificRequirements = getPromptSpecifics(agreementType, firstParty, counterparty);
 
-    // 2. Assemble the final prompt parts.
+    // --- Assemble the final prompt ---
     const documentSpecificRequirements = `Document-Specific Requirements:
 ${specificRequirements}
 For each document type, ensure that all sections are written as complete paragraphs, with no bullet points or numbered lists. Each section should flow naturally, fully explaining the legal concepts and providing clarity to the terms. Each document should reflect ${firstParty} business and legal requirements as outlined. 
 `;
 
-    // 3. Build the complete prompt string.
     const prompt = `
+${msaReference}
+${contractNumberDisplay}
+
 Inputs:
 Agreement Type: [${agreementType}]
 Industry: [${industry}]
@@ -420,7 +458,7 @@ Instructions:
 3. Use this information to generate an agreement that provides a realistic representation of this type of agreement. DO NOT include any explanatory text before or after the agreement. 
 `;
 
-    Logger.log("Document Specific Requirements" + documentSpecificRequirements);
+    console.log("Doc Specific Reqs: " + documentSpecificRequirements);
     return prompt;
 }
 
@@ -447,7 +485,7 @@ If the company is based in France, replace [country] with "France".
 If the agreement is being generated for a UK-based contract, replace [country] with "United Kingdom".
 For any other countries, replace [country] accordingly.
 Fictitious Company Address:
- The Fictitious CompanyAddress will be automatically generated based on the [country] variable. For example:
+ The Fictitious Company Address will be automatically generated based on the [country] variable. For example:
 For France, the address might be "123 Rue de la Technologie, Paris, 75001".
 For United Kingdom, the address might be "45 High Street, London, EC1A 1BB".
  The generated company address will ensure a credible and localized appearance for the fictitious company.
@@ -471,51 +509,46 @@ To generate several Word documents with contractual information in [Language]. T
     return objective;
 }
 
-function getPromptGeneralRequirements() {
+function getPromptGeneralRequirements(firstParty, counterparty) {
     return `General Requirements:
+
+### Agreement Structure
+The generated agreement must follow a logical and professional structure. Adhere to the following architectural guidelines:
+
+1.  **Preamble and Recitals**: Begin with a preamble identifying the parties (${firstParty}, ${counterparty}) and the Effective Date. Follow this with "Whereas" clauses (Recitals) that explain the business context and the purpose of the agreement.
+
+2.  **Definitions Section**: Immediately after the Recitals, include a numbered "Definitions" section. All key terms that are used in multiple sections of the agreement (e.g., "Confidential Information," "Services," "Term") must be defined here.
+
+3.  **Logical Section Flow**: The body of the agreement should follow this conventional order:
+    * Core Business Terms (e.g., Scope of Services, Payment, Deliverables).
+    * Term and Termination provisions.
+    * Representations and Warranties.
+    * Covenants and Ongoing Obligations (e.g., Confidentiality).
+    * Risk Allocation (e.g., Indemnification, Limitation of Liability).
+    * Miscellaneous / Boilerplate Provisions.
+    * Signatures and Exhibits.
+
+4.  **Boilerplate Section**: Group all standard legal clauses (e.g., Governing Law, Notices, Assignment, Force Majeure, Entire Agreement, Severability) into a final section titled "Miscellaneous" or "General Provisions".
+
+5.  **Signatures**: Conclude with a proper signature block for the authorized representatives of both ${firstParty} and ${counterparty}, including lines for name, title, and date.
+
+### Content and Style Requirements
 Level of Detail:
- All content must be extensively detailed and realistic. Each section must include several lines of paragraphs written in formal legal language.
- No bullet points or numbered lists are allowed in the content. Information should be presented in long paragraphs, fully explaining all terms and concepts.
+ All content must be extensively detailed and realistic. Each section must include several lines of paragraphs written in formal legal language. No bullet points or numbered lists are allowed in the content. Information should be presented in long paragraphs, fully explaining all terms and concepts.
+
 Contextualization: Every section must thoroughly explain the terms and clauses, illustrated with real-world examples or industry-specific use cases where applicable.
-Key Terms: All terms should be finalized, avoiding placeholders or incomplete information. Key terms must be explained in long, exhaustive paragraphs.
-Industry-Specific Adaptation:  Each agreement should reference practices, regulations, and compliance requirements specific to [industry], making the documents contextually relevant to Sample Company’s operations.
-Local Regulations: Relevant local laws, regulations, or authorities (e.g., BaFin for financial services in Germany, GDPR for data protection in the EU, or FCA in the UK) must be included where appropriate for the [industry] and [country]. These should be explicitly detailed in the documents, especially in clauses like governing law, compliance, data protection, and dispute resolution.
-Currency Consistency: Monetary values in the agreements (e.g., contract value, penalties, late fees) must use the currency consistent with the country where the agreement applies. For example:
-Euros (€) for France, Germany, and other Eurozone countries.
-Pounds (£) for the UK.
-US Dollars ($) for agreements linked to the United States.
- Ensure the amounts are realistic and contextually appropriate for the contract type and country.
-Date Formatting: Dates must be formatted according to the [country]'s standard date format. For example:
-dd/mm/yyyy for France and other European countries.
-mm/dd/yyyy for the United States.
-yyyy-mm-dd for countries that follow the ISO standard (e.g., Japan, China).
- Ensure that any date mentioned (e.g., execution date, expiration date, notice periods) adheres to the correct local format.
-Writing Style Requirements:
-Formal and Professional Tone:
- The language should be professional and employ legal terminology appropriate for contracts (e.g., "assign," "delegate," "transfer," "consent," etc.). The tone must remain formal throughout to ensure consistency with legal documentation.
-Clear and Detailed:
- The clauses should provide clear conditions for each term, specifying any requirements or restrictions. Where applicable, specific exceptions should be included to clarify under what circumstances certain provisions apply (e.g., "assignment with consent" or "exceptions in the case of mergers or asset sales"). Every condition should be fully explained to ensure no ambiguity.
-Conditional Structure:
- Use conditional language (e.g., "provided, however," "but excluding," "for avoidance of doubt") to define exceptions or conditions that apply under specific situations. This will help ensure that all possible scenarios are addressed, leaving no room for misinterpretation.
-Comprehensive:
- Each clause should be comprehensive, addressing various situations or circumstances relevant to the contract. For example, when detailing assignment terms, include not only the consent process but also exceptions, impact on subscriptions, and any related restrictions (e.g., assigning to competitors). The document must ensure that all aspects are covered.
-Protective and Restrictive:
- Ensure that both parties' rights are protected by setting conditions for any assignment or transfer of rights. Include provisions where consent is required in most cases, while acknowledging certain business changes (e.g., mergers, asset sales) where assignment may occur without consent but under certain restrictions to prevent misuse (such as assignment to a competitor).
-Binding and Inuring Language:
- Use binding legal language in clauses, affirming that the agreement will apply to both parties and their respective successors or permitted assigns. Include phrases such as: “This Agreement shall be binding upon and inure to the benefit of the Parties and their respective successors and permitted assigns.” This emphasizes the long-term applicability and enforceability of the terms.
-Signatures and Parties: Include signature sections for both Sample Company and a credible fictitious company. Names and addresses of the fictitious companies must be realistic and context-appropriate (e.g., “GreenFuture Energy” or “TechNova Systems”).
-Document Title Formatting: The title of each document must be centered at the top of the page in bold and in Calibri font, size 14, to ensure professional presentation.
-Credible Company Names: The names of fictitious companies should be realistic and context-appropriate, such as “GreenFuture Energy” or “TechNova Systems,” avoiding generic placeholders like “Alpha” or “Beta.”
-Professional Layout: Use a polished and professional design, ensuring documents look like they were drafted by a legal team.
-Compliance with Local Laws: Tailor the agreements to comply with the legal framework of relevant jurisdictions (e.g., GDPR for EMEA).
-Length and Detail: Each document should be sufficiently detailed, with a minimum of 6 pages where applicable, covering all necessary clauses comprehensively.
-Expand on Definitions and Explanations:
- Ensure that every key term or clause is thoroughly defined and explained in its full context. This includes adding detailed scenarios to make clauses more complex, as well as incorporating contingencies. For example, explain under what conditions a certain clause would be triggered, or how specific provisions could be amended if unforeseen circumstances arise. This expansion will increase the sentence length without losing clarity. Example: "The obligations of the parties under this Agreement shall include, but are not limited to, the timely provision of services as set forth in the Statement of Work ("SOW"), except in the event of force majeure, as outlined herein, in which case such obligations may be suspended for a period not exceeding thirty (30) days, or until such time as the event of force majeure has been resolved."
-Incorporate Detailed Examples and Case Studies: When describing specific terms, scenarios, or legal situations, add hypothetical examples or historical case studies to explain the applicability of the clause. These examples should be written as extended sentences explaining how each provision works in practice, based on a specific-industry scenarios.  Example: "For example, if a delay in service provision occurs due to unforeseen technical issues, the parties agree to adhere to the following protocol: the Client shall provide Sample Company with a written notice, specifying the delay's nature and expected resolution time, and the parties shall meet to discuss any necessary amendments to the schedule, provided that the delay does not exceed [X] days in total."
-Use Legal Terminology in a Structured Manner: Incorporate complex legal terms such as "notwithstanding," "hereinafter," "whereas," "provided, however," and "subject to." These terms should be interwoven with conditional statements to convey nuanced meanings, making sentences longer and more detailed without sacrificing clarity.  Example: "Notwithstanding any provision to the contrary, in the event that the Client defaults on any payment obligation under this Agreement, Sample Company shall have the right, at its sole discretion, to suspend the provision of services until such time as the outstanding balance is cleared, provided, however, that such suspension shall not exceed [X] days, unless otherwise agreed by the parties in writing."
-Conditional and Subordinate Clauses: Introduce more conditional clauses (e.g., "provided that," "in the event that," "unless otherwise agreed") and subordinate clauses to increase sentence length and complexity. These clauses will allow you to describe various scenarios in detail and ensure that all contingencies are covered. Example: "In the event that any material breach of this Agreement occurs, and such breach is not cured within thirty (30) days of receiving written notice thereof, the non-breaching party shall have the right to terminate the Agreement immediately, unless the parties mutually agree to extend the cure period."
-Formalizing Modifiers and Descriptive Language: Use adjectives and adverbs that add formality and precision to your legal writing. For example, rather than simply stating an obligation, you could state it as an obligation that is "expressly mandated, as stipulated herein, under all circumstances unless modified by a written agreement duly executed by both parties." Example: "The Client shall pay the fees specified in the applicable Statement of Work (SOW), expressly acknowledging that the fees are due in full on the specified due date, unless otherwise mutually agreed upon in writing by the authorized representatives of both parties."
-Offer Detailed Justifications for Each Clause: Rather than stating a clause in isolation, explain its purpose in detail. For instance, instead of saying "The parties agree to confidentiality," elaborate by describing the potential consequences of violating confidentiality and why it is critical to safeguard proprietary information.  Example: "The parties acknowledge that any breach of confidentiality may result in significant harm to the disclosing party, including, but not limited to, loss of intellectual property, trade secrets, or business strategies. Therefore, the parties agree that confidentiality shall be maintained throughout the term of this Agreement and for a period of five (5) years following its termination, as failure to do so could expose the breaching party to substantial damages.`;
+
+Key Terms: All terms should be finalized, avoiding placeholders or incomplete information.
+
+Industry-Specific Adaptation:  Each agreement should reference practices, regulations, and compliance requirements specific to [industry], making the documents contextually relevant to ${firstParty}’s operations.
+
+Local Regulations: Relevant local laws, regulations, or authorities (e.g., BaFin for financial services in Germany, GDPR for data protection in the EU, or FCA in the UK) must be included where appropriate for the [industry] and [country].
+
+Currency and Date Formatting: All monetary values and dates must use the appropriate format for the specified [country].
+
+Writing Style:
+The language must be professional, formal, and employ appropriate legal terminology. Use conditional and subordinate clauses to ensure all provisions are comprehensive, protective, and unambiguous. Include binding language affirming the agreement applies to both parties and their successors.
+`;
 }
 
 function getPromptSpecifics(agreementType, firstParty, counterparty) {
@@ -767,7 +800,7 @@ Signatures: This section provides space for authorized representatives of both p
     return specificRequirements;
 }
 
-function getPromptOutputFormat(firstParty) {
+function getPromptOutputFormat(firstParty, counterparty) {
 
     const outputFormat = `Output Format
 The output must be formatted as valid HTML, using markup such as h1, h2, sections or bullet points. Each document must be formatted in Arial, font size 11 or 12, with clearly structured headings (e.g., level 1, level 2, etc.). Missing sections or necessary content must be added depending on the document type. Ensure that all sections are appropriately detailed, maintaining the same quality and level of completeness, in line with legal best practices. Sections must follow an order based on market usage, ensuring that the document adheres to the typical structure of its type (e.g., agreements, contracts, amendments) as commonly practiced in the industry. 
@@ -793,38 +826,52 @@ Ensure the HTML formatting is clean and adheres to standard practices. If possib
 }
 
 /**
- * Takes generated row data, creates a prompt, calls the AI, and saves the file to the specified subfolder.
- * @param {Array} rowData The array of data generated by a ...Row function.
+ * Takes a generated data object, creates a prompt, calls the AI, 
+ * and saves the resulting file to the specified subfolder.
+ * @param {Object} docData The object of data generated by a ...Row function.
  * @param {GoogleAppsScript.Drive.Folder} subfolder The Google Drive folder to save the new file in.
  */
-function processAndCreateFile(rowData, subfolder) {
-  if (!rowData) {
-    Logger.log("processAndCreateFile skipped because rowData was null.");
-    return;
-  }
+function processAndCreateFile(docData, subfolder) {
+    if (!docData) {
+        Logger.log("processAndCreateFile skipped because docData was null.");
+        return;
+    }
 
-  // Unpack the data from the rowData array
-  const [ , , agreementType, specialInstructions, language, industry, geography, firstParty, counterparty] = rowData;
+    // Destructure all needed properties from the data object
+    const {
+        agreementType, language, firstParty, counterparty,
+        contractNumber, // The MSA's own number
+        parentMsaContractNumber // The number from the parent MSA for SOWs/COs
+    } = docData;
 
-  // Define the role and create the prompt
-  const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
-  const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty);
+    const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
+    const prompt = createPrompt(docData);
 
-  try {
-    // Call the AI and create the file in Drive
-    const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
-    const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
-    const newFile = DriveApp.getFileById(newFileId);
-    
-    // Move the file to the correct folder and set its description
-    newFile.moveTo(subfolder);
-    newFile.setDescription(`Template for ${firstParty} and ${counterparty}`);
-  } catch (error) {
-      Logger.log(`Failed to create document for ${agreementType} with ${counterparty}. Error: ${error.message}`);
-      // Note: The main function's catch block will report the error to the user.
-      // We could throw the error here to be more explicit if needed.
-      throw new Error(`Failed to process file for ${agreementType}.`);
-  }
+    try {
+        const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
+
+        // --- REFINEMENT: Determine the filename number based on document type ---
+        let numberForFileName;
+        if (agreementType.includes("MSA")) {
+            // If it's an MSA, use its own specific contract number.
+            numberForFileName = contractNumber;
+        } else {
+            // For all other documents (SOWs, COs, NDAs), generate a new, unique number.
+            numberForFileName = generateContractNumber();
+        }
+
+        // Pass the correctly determined number to the file creation function.
+        const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language, numberForFileName);
+
+        const newFile = DriveApp.getFileById(newFileId);
+        newFile.moveTo(subfolder);
+        newFile.setDescription(`Template for ${firstParty} and ${counterparty}`);
+
+    } catch (error) {
+        Logger.log(`Failed to create document for ${agreementType} with ${counterparty}. Original Error: ${error.message}`);
+        // This includes the original error details in the message shown to the user.
+        throw new Error(`Failed for ${agreementType}. Details: ${error.message}`);
+    }
 }
 
 /**
@@ -853,7 +900,7 @@ function generateContractNumber() {
     return contractNumber;
 }
 
-function createFileInDriveV3(html, agreementType, language) {
+function createFileInDriveV3(html, agreementType, language, contractNumber) {
     const languageAbbreviations = {
         Spanish: "[ES]",
         French: "[FR]",
@@ -864,12 +911,14 @@ function createFileInDriveV3(html, agreementType, language) {
     };
 
     const langPrefix = languageAbbreviations[language] || "";
-    const contractNumber = generateContractNumber();
+
+    // Use the provided contract number, or generate a new one if it doesn't exist.
+    const finalContractNumber = contractNumber || generateContractNumber();
 
     // Clean filename: avoid leading spaces
     const fileNameParts = [];
     if (langPrefix) fileNameParts.push(langPrefix);
-    fileNameParts.push(agreementType, contractNumber);
+    fileNameParts.push(agreementType, finalContractNumber);
     const fileName = fileNameParts.join(" - ").trim();
 
     // Sanitize HTML content
