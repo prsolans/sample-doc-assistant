@@ -7,106 +7,113 @@
  * @param {Object} e The event object from the onEdit trigger.
  */
 function submitSampleRequest(e) {
-    // Check if the trigger is a valid sheet edit
-    if (!e || !e.source) {
-        Logger.log("Function called without a valid event trigger.");
-        return;
+  // Check if the trigger is a valid sheet edit
+  if (!e || !e.source) {
+    Logger.log("Function called without a valid event trigger.");
+    return;
+  }
+
+  const spreadsheet = e.source;
+  const sheet = spreadsheet.getActiveSheet();
+  const activeRange = spreadsheet.getActiveRange();
+  const firstRow = activeRange.getRow();
+
+  // Exit if the edit is on the wrong sheet or in the header row
+  if (sheet.getName() !== "Requests" || firstRow <= 1) {
+    return;
+  }
+
+  // --- REFINEMENT: Define a column map ---
+  // This makes the code resilient to changes in column order.
+  const COLUMN_MAP = {
+    EMAIL: 2,
+    QUANTITY: 3,
+    SPECIAL_INSTRUCTIONS: 4,
+    DOC_TYPES: 5,
+    LANGUAGE: 6,
+    STATUS: 7
+  };
+  
+  const statusRange = sheet.getRange(firstRow, COLUMN_MAP.STATUS);
+
+  try {
+    statusRange.setValue("Processing..."); // Provide immediate feedback
+
+    // Securely get Root Folder ID from Script Properties
+    const properties = PropertiesService.getScriptProperties();
+    const rootFolderId = properties.getProperty('ROOT_FOLDER_ID');
+    if (!rootFolderId) {
+        throw new Error("ROOT_FOLDER_ID is not set in Script Properties.");
     }
 
-    const spreadsheet = e.source;
-    const sheet = spreadsheet.getActiveSheet();
-    const activeRange = spreadsheet.getActiveRange();
-    const firstRow = activeRange.getRow();
+    // Use the COLUMN_MAP to read data into a structured object
+    const requestData = {
+      email: sheet.getRange(firstRow, COLUMN_MAP.EMAIL).getValue(),
+      quantity: parseInt(sheet.getRange(firstRow, COLUMN_MAP.QUANTITY).getValue(), 10),
+      specialInstructions: sheet.getRange(firstRow, COLUMN_MAP.SPECIAL_INSTRUCTIONS).getValue(),
+      docTypeString: sheet.getRange(firstRow, COLUMN_MAP.DOC_TYPES).getValue(),
+      language: sheet.getRange(firstRow, COLUMN_MAP.LANGUAGE).getValue(),
+    };
 
-    // Exit if the edit is on the wrong sheet or in the header row
-    if (sheet.getName() !== "Requests" || firstRow <= 1) {
-        return;
+    // Validate the essential data from the object
+    if (!requestData.email || !requestData.quantity || requestData.quantity <= 0) {
+      throw new Error("Invalid or missing Email or Quantity.");
     }
 
-    // --- CONFIGURATION ---
-    // Assumes your "Status" column is column 7 (G). Change if needed.
-    const STATUS_COLUMN = 7;
-    const statusRange = sheet.getRange(firstRow, STATUS_COLUMN);
+    // --- FOLDER SETUP ---
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const folderName = `${requestData.email}_${timestamp}`;
+    const rootFolder = DriveApp.getFolderById(rootFolderId);
+    const subfolder = rootFolder.createFolder(folderName);
 
+    // Transfer folder ownership if applicable
     try {
-        statusRange.setValue("Processing..."); // Provide immediate feedback
-
-        // --- REFINEMENT: Get Root Folder ID from Script Properties ---
-        // Make sure you have set 'ROOT_FOLDER_ID' in Project Settings > Script Properties.
-        const properties = PropertiesService.getScriptProperties();
-        const rootFolderId = properties.getProperty('ROOT_FOLDER_ID');
-        if (!rootFolderId) {
-            throw new Error("ROOT_FOLDER_ID is not set in Script Properties.");
-        }
-
-        // --- REFINEMENT: Read row data into a structured object ---
-        const requestData = {
-            email: sheet.getRange(firstRow, 2).getValue(),
-            quantity: parseInt(sheet.getRange(firstRow, 3).getValue(), 10),
-            specialInstructions: sheet.getRange(firstRow, 4).getValue(),
-            docTypeString: sheet.getRange(firstRow, 5).getValue(),
-            language: sheet.getRange(firstRow, 6).getValue(),
-        };
-
-        // Validate the essential data from the object
-        if (!requestData.email || !requestData.quantity || requestData.quantity <= 0) {
-            throw new Error("Invalid or missing Email or Quantity.");
-        }
-
-        // --- FOLDER SETUP ---
-        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-        const folderName = `${requestData.email}_${timestamp}`;
-        const rootFolder = DriveApp.getFolderById(rootFolderId);
-        const subfolder = rootFolder.createFolder(folderName);
-
-        // Transfer folder ownership if applicable
-        try {
-            if (requestData.email.endsWith("@docusign.com")) {
-                subfolder.addEditor(requestData.email);
-                subfolder.setOwner(requestData.email);
-                Logger.log("Transferred ownership of folder to " + requestData.email);
-            }
-        } catch (ownershipError) {
-            Logger.log("Could not transfer ownership (this is common and can be ignored): " + ownershipError.message);
-        }
-
-        const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations...'; // Truncated for brevity
-
-        // --- MAIN DOCUMENT GENERATION LOOP ---
-        for (let i = 0; i < requestData.quantity; i++) {
-            const rowData = generateFakeAgreementRow(requestData);
-
-            if (!rowData) {
-                Logger.log("No row data generated for iteration " + i);
-                continue;
-            }
-
-            const [, , agreementType, specialInstructions, language, industry, geography] = rowData;
-            const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions);
-
-            try {
-                const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
-                const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
-                const newFile = DriveApp.getFileById(newFileId);
-                newFile.moveTo(subfolder);
-                newFile.setDescription("Template generated for " + requestData.email);
-            } catch (docError) {
-                Logger.log(`Error generating doc for ${agreementType}: ${docError.message}`);
-                statusRange.setValue("Completed with some errors. Check logs.");
-            }
-        }
-
-        // --- SUCCESS ---
-        const successMessage = `Success! ${requestData.quantity} agreements in folder.`;
-        statusRange.setValue(successMessage);
-        sendSlackNotification(requestData.email, `Generated ${requestData.quantity} agreements`, requestData.language, subfolder.getUrl());
-        Logger.log("Slack notification sent with folder link.");
-
-    } catch (error) {
-        // --- REFINEMENT: Catch any error and write it to the Status column ---
-        Logger.log(`Error processing request in row ${firstRow}: ${error.message}`);
-        statusRange.setValue(`Error: ${error.message}`);
+      if (requestData.email.endsWith("@docusign.com")) {
+        subfolder.addEditor(requestData.email);
+        subfolder.setOwner(requestData.email);
+        Logger.log("Transferred ownership of folder to " + requestData.email);
+      }
+    } catch (ownershipError) {
+      Logger.log("Could not transfer ownership (this is common and can be ignored): " + ownershipError.message);
     }
+
+    const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
+
+    // --- MAIN DOCUMENT GENERATION LOOP ---
+    for (let i = 0; i < requestData.quantity; i++) {
+      const rowData = generateFakeAgreementRow(requestData);
+
+      if (!rowData) {
+        Logger.log("No row data generated for iteration " + i);
+        continue;
+      }
+
+      const [ , , agreementType, specialInstructions, language, industry, geography] = rowData;
+      const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions);
+
+      try {
+        const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
+        const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
+        const newFile = DriveApp.getFileById(newFileId);
+        newFile.moveTo(subfolder);
+        newFile.setDescription("Template generated for " + requestData.email);
+      } catch (docError) {
+        Logger.log(`Error generating doc for ${agreementType}: ${docError.message}`);
+        statusRange.setValue("Completed with some errors. Check logs.");
+      }
+    }
+
+    // --- SUCCESS ---
+    const successMessage = `Success! ${requestData.quantity} agreements in folder.`;
+    statusRange.setValue(successMessage);
+    sendSlackNotification(requestData.email, `Generated ${requestData.quantity} agreements`, requestData.language, subfolder.getUrl());
+    Logger.log("Slack notification sent with folder link.");
+
+  } catch (error) {
+    // Catch any error and write it to the Status column
+    Logger.log(`Error processing request in row ${firstRow}: ${error.message}`);
+    statusRange.setValue(`Error: ${error.message}`);
+  }
 }
 
 /**
@@ -117,94 +124,168 @@ function submitSampleRequest(e) {
  * @return {Array | null} An array of generated data for a single agreement, or null if no valid document types are found.
  */
 function generateFakeAgreementRow(requestData) {
-    const today = new Date();
+  const today = new Date();
 
-    // --- Helpers ---
-    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
-    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
-    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+  // --- Helpers ---
+  const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+  const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+  const shuffle = arr => arr.sort(() => Math.random() - 0.5);
 
-    // --- Static Data and Mappings (unchanged) ---
-    const STANDARDIZED_DOC_TYPE_MAP = { /* ... */ };
-    const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
-    const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
-    // ... (all other static data remains the same)
+  // --- Static picklists & Mappings ---
+  const STANDARDIZED_DOC_TYPE_MAP = {
+    "NDA": "Non-Disclosure Agreement (NDA)",
+    "MSA": "Master Service Agreement (MSA)",
+    "SOW": "Statement Of Work (SOW)",
+    "Amendment": "Amendment",
+    "Lease": "Lease Agreement",
+    "License": "License Agreement",
+    "Services": "Services Agreement",
+    "Change Order": "Change Order",
+    "Purchase": "Purchase Agreement",
+    "Consulting": "Consulting Agreement",
+    "Offer Letter": "Offer Letter",
+    "Employee Separation": "Employee Separation Agreement",
+    "Contractor": "Contractor Agreement"
+  };
 
-    // --- REFINEMENT: Pull document types from the requestData object ---
-    const extractedTypes = [];
-    const categoryRegex = /\(([^)]+)\)/g;
-    let match;
-    // Use requestData.docTypeString instead of a separate argument
-    while ((match = categoryRegex.exec(requestData.docTypeString)) !== null) {
-        const docs = match[1].split(",").map(d => d.trim());
-        extractedTypes.push(...docs);
+  const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
+  const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
+  const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
+  const TERM_OPTIONS = [1, 2, 3];
+  const DAYS_NOTICE = [30, 60, 90];
+  const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
+  const PAYMENT_TERMS = ["30 days", "45 days", "60 days"];
+
+  const OBLIGATIONS = {
+    "Non-Disclosure Agreement (NDA)": ["Confidentiality", "Data Breach"],
+    "Master Service Agreement (MSA)": ["Compliance", "Indemnification", "Insurance", "Limitation of Liability", "Escalation", "DORA"],
+    "Statement Of Work (SOW)": ["Deliverables", "Escalation", "Limitation of Liability", "Indemnification", "Insurance"],
+    "Lease Agreement": ["Compliance", "Insurance", "Limitation of Liability"],
+    "License Agreement": ["Compliance", "Limitation of Liability", "Indemnification"],
+    "Services Agreement": ["Service Levels", "Escalation", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Change Order": ["Deliverables", "Escalation"],
+    "Offer Letter": ["Confidentiality", "Non-Solicitation"],
+    "Purchase Agreement": ["Warranties", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Consulting Agreement": ["Deliverables", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Employee Separation Agreement": ["Confidentiality", "Non-Disparagement"],
+    "Contractor Agreement": ["Confidentiality", "Insurance", "Indemnification"]
+  };
+
+  const OBL_TEXT = {
+    Compliance: "Compliance: Both parties shall comply with all applicable laws, regulations and internal policies, including anti-corruption, export controls and data privacy rules.",
+    Confidentiality: "Confidentiality: All Confidential Information must be protected with at least the same degree of care as the party uses for its own, and not less than reasonable care.",
+    "Data Breach": "Data Breach: Each party will notify the other within 48 hours of any security incident affecting personal data and cooperate on remediation efforts.",
+    Deliverables: "Deliverables: All deliverables must meet the acceptance criteria defined in the SOW and be delivered in both draft and final formats.",
+    Escalation: "Escalation: Unresolved issues will escalate to executive sponsors within 5 business days, following the path: Project Manager → VP → CEO.",
+    Indemnification: "Indemnification: Each party will indemnify the other against third-party claims for breach, negligence or IP infringement, subject to notice and defense requirements.",
+    Insurance: "Insurance: Contractor shall maintain general liability ($1M per occurrence), professional liability ($2M aggregate) and workers’ comp coverage as required by law.",
+    "Limitation of Liability": "Limitation of Liability: Neither party’s aggregate liability will exceed the total fees paid under this agreement, except for willful misconduct or gross negligence.",
+    "Service Levels": "Service Levels: Provider guarantees 99.9% uptime and will credit fees for any monthly downtime exceeding SLA targets.",
+    Warranties: "Warranties: Seller warrants that goods will conform to specifications for 12 months and will repair or replace defective items at no cost.",
+    "Non-Solicitation": "Non-Solicitation: For 12 months post-termination, neither party will solicit or hire the other’s employees or contractors.",
+    "Non-Disparagement": "Non-Disparagement: Both parties agree not to make adverse or negative public statements about the other following separation.",
+    DORA: "DORA: Parties shall comply with the EU Digital Operational Resilience Act..."
+  };
+
+  // --- REFINEMENT: Pull document types from the requestData object ---
+  const extractedTypes = [];
+  const categoryRegex = /\(([^)]+)\)/g;
+  let match;
+  // Use requestData.docTypeString instead of a separate argument
+  while ((match = categoryRegex.exec(requestData.docTypeString)) !== null) {
+    const docs = match[1].split(",").map(d => d.trim());
+    extractedTypes.push(...docs);
+  }
+
+  const standardizedTypes = extractedTypes
+    .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t)
+    .filter(t => !!OBLIGATIONS[t]);
+
+  if (standardizedTypes.length === 0) {
+    Logger.log("No valid document types found in: " + requestData.docTypeString);
+    return null;
+  }
+
+  const agreementType = pick(standardizedTypes);
+
+  // --- REFINEMENT: Access properties from the requestData object ---
+  const email = requestData.email;
+  const language = requestData.language;
+  const industry = pick(INDUSTRIES);
+  const geography = pick(REGIONS);
+
+  // --- Determine dates & term ---
+  const isNoTerm = NO_TERM_DOCS.includes(agreementType);
+  let effectiveDate, termYears, termEndDate, renewalNoticePeriod, renewalNoticeDate, actionRequiredBy;
+
+  if (isNoTerm) {
+    const daysAgo = pick([30, 60, 90, 180, 365]);
+    effectiveDate = addDays(today, -daysAgo);
+  } else {
+    const daysUntilExpiry = Math.floor(Math.random() * 180) + 1;
+    termEndDate = addDays(today, daysUntilExpiry);
+    termYears = pick([1, 2, 3, 5]);
+    effectiveDate = new Date(termEndDate);
+    effectiveDate.setFullYear(effectiveDate.getFullYear() - termYears);
+    renewalNoticePeriod = pick(DAYS_NOTICE);
+    renewalNoticeDate = addDays(termEndDate, -renewalNoticePeriod);
+    actionRequiredBy = addDays(today, Math.floor(Math.random() * 180));
+  }
+
+  const parts = [`Effective Date: ${fmt(effectiveDate)}`];
+
+  if (!isNoTerm) {
+    parts.push(
+      `Initial Term: ${termYears} year(s)`,
+      `Expiration Date: ${fmt(termEndDate)}`,
+      `Renewal Notice Period: ${renewalNoticePeriod} days`,
+      `Renewal Notice Date: ${fmt(renewalNoticeDate)}`,
+      `Action Required By: ${fmt(actionRequiredBy)}`,
+      `Assignment (General): ${pick(ASSIGN_OPTS)}`,
+      `Assignment (Change of Control): ${pick(ASSIGN_OPTS)}`,
+      `Assignment (Termination Rights): ${pick(["Yes", "No"])}`,
+      `Payment Terms: ${pick(PAYMENT_TERMS)}`,
+      `Termination for Cause Notice: ${pick(DAYS_NOTICE)} days`,
+      `Termination for Convenience Notice: ${pick(DAYS_NOTICE)} days`
+    );
+  }
+
+  if (agreementType.includes("SOW")) {
+    const totalValue = Math.floor(Math.random() * 450000) + 50000;
+    const depositAmount = Math.floor(Math.random() * 20000) + 5000;
+    const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
+    const depositDue = addDays(today, Math.floor(Math.random() * 180));
+    const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
+
+    parts.push(
+      `Total Contract Value: $${totalValue.toLocaleString()} USD`,
+      `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
+      `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`,
+      // --- REFINEMENT: Access specialInstructions from the requestData object ---
+      `Additional Notes: ${requestData.specialInstructions || ""}`
+    );
+  }
+
+  const possible = OBLIGATIONS[agreementType] || [];
+  const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
+  selected.forEach(key => {
+    if (OBL_TEXT[key]) {
+      parts.push(OBL_TEXT[key]);
     }
+  });
 
-    const standardizedTypes = extractedTypes
-        .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t)
-        .filter(t => !!OBLIGATIONS[t]);
+  const specialInstructions = parts.join(", ");
 
-    if (standardizedTypes.length === 0) {
-        Logger.log("No valid document types found in: " + requestData.docTypeString);
-        return null;
-    }
-
-    const agreementType = pick(standardizedTypes);
-
-    // --- REFINEMENT: Access properties from the requestData object ---
-    const email = requestData.email;
-    const language = requestData.language;
-    const industry = pick(INDUSTRIES);
-    const geography = pick(REGIONS);
-
-    // --- Determine dates & term (logic unchanged) ---
-    const isNoTerm = NO_TERM_DOCS.includes(agreementType);
-    let effectiveDate, termYears, termEndDate, renewalNoticePeriod, renewalNoticeDate, actionRequiredBy;
-    // ... (date calculation logic remains the same)
-
-    // --- Build the special instructions string ---
-    const parts = [`Effective Date: ${fmt(effectiveDate)}`];
-    if (!isNoTerm) {
-        parts.push(
-            `Initial Term: ${termYears} year(s)`,
-            `Expiration Date: ${fmt(termEndDate)}`,
-            // ... (all other general parts remain the same)
-        );
-    }
-
-    // --- REFINEMENT: Access specialInstructions from the requestData object ---
-    if (agreementType.includes("SOW")) {
-        // ... (SOW value generation remains the same)
-        parts.push(
-            `Total Contract Value: $${totalValue.toLocaleString()} USD`,
-            `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
-            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`,
-            `Additional Notes: ${requestData.specialInstructions || ""}` // Use object property
-        );
-    }
-
-    // --- Obligation logic (unchanged) ---
-    const possible = OBLIGATIONS[agreementType] || [];
-    const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
-    selected.forEach(key => {
-        if (OBL_TEXT[key]) {
-            parts.push(OBL_TEXT[key]);
-        }
-    });
-
-    const specialInstructions = parts.join(", ");
-
-    // --- Return the final structured array ---
-    return [
-        fmt(today),
-        email,
-        agreementType,
-        specialInstructions,
-        language,
-        industry,
-        geography
-    ];
+  return [
+    fmt(today),
+    email,
+    agreementType,
+    specialInstructions,
+    language,
+    industry,
+    geography
+  ];
 }
 
 function createPrompt(agreementType, industry, geography, language, specialInstructions) {
