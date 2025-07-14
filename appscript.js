@@ -1,8 +1,90 @@
+// --- GLOBAL CONSTANTS ---
+// By placing these at the top, any function in the script can use them.
+const COUNTERPARTIES = [
+    "Keystone Dynamics",
+    "Weekend Ventures",
+    "Iver & Co.",
+    "Dancefloor Data",
+    "Torches & Co.",
+    "Arcade Corp.",
+    "Modern Age Ventures",
+    "Everlong Enterprises",
+    "High Violet Group",
+    "Little Lion Holdings",
+    "Xyloto Corp.",
+    "Dog Days Capital",
+    "Electric Feel Energy",
+    "Oracular Inc.",
+    "Impala Logistics",
+    "Coexist Innovations",
+    "Innerspeaker Inc.",
+    "After Hours Capital",
+    "Crystal Castle Holdings",
+    "El Camino Group",
+    "Wolf Gang Ventures",
+    "All Friends Co."
+];
+
+// --- Static picklists & Mappings ---
+const STANDARDIZED_DOC_TYPE_MAP = {
+    "NDA": "Non-Disclosure Agreement (NDA)",
+    "MSA": "Master Service Agreement (MSA)",
+    "SOW": "Statement Of Work (SOW)",
+    "Amendment": "Amendment",
+    "Lease": "Lease Agreement",
+    "License": "License Agreement",
+    "Services": "Services Agreement",
+    "Change Order": "Change Order",
+    "Purchase": "Purchase Agreement",
+    "Consulting": "Consulting Agreement",
+    "Offer Letter": "Offer Letter",
+    "Employee Separation": "Employee Separation Agreement",
+    "Contractor": "Contractor Agreement"
+};
+
+const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
+const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
+const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
+const TERM_OPTIONS = [1, 2, 3];
+const DAYS_NOTICE = [30, 60, 90];
+const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
+const PAYMENT_TERMS = ["30 days", "45 days", "60 days"];
+
+const OBLIGATIONS = {
+    "Non-Disclosure Agreement (NDA)": ["Confidentiality", "Data Breach"],
+    "Master Service Agreement (MSA)": ["Compliance", "Indemnification", "Insurance", "Limitation of Liability", "Escalation", "DORA"],
+    "Statement Of Work (SOW)": ["Deliverables", "Escalation", "Limitation of Liability", "Indemnification", "Insurance"],
+    "Lease Agreement": ["Compliance", "Insurance", "Limitation of Liability"],
+    "License Agreement": ["Compliance", "Limitation of Liability", "Indemnification"],
+    "Services Agreement": ["Service Levels", "Escalation", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Change Order": ["Deliverables", "Escalation"],
+    "Offer Letter": ["Confidentiality", "Non-Solicitation"],
+    "Purchase Agreement": ["Warranties", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Consulting Agreement": ["Deliverables", "Indemnification", "Insurance", "Limitation of Liability"],
+    "Employee Separation Agreement": ["Confidentiality", "Non-Disparagement"],
+    "Contractor Agreement": ["Confidentiality", "Insurance", "Indemnification"]
+};
+
+const OBL_TEXT = {
+    Compliance: "Compliance: Both parties shall comply with all applicable laws, regulations and internal policies, including anti-corruption, export controls and data privacy rules.",
+    Confidentiality: "Confidentiality: All Confidential Information must be protected with at least the same degree of care as the party uses for its own, and not less than reasonable care.",
+    "Data Breach": "Data Breach: Each party will notify the other within 48 hours of any security incident affecting personal data and cooperate on remediation efforts.",
+    Deliverables: "Deliverables: All deliverables must meet the acceptance criteria defined in the SOW and be delivered in both draft and final formats.",
+    Escalation: "Escalation: Unresolved issues will escalate to executive sponsors within 5 business days, following the path: Project Manager → VP → CEO.",
+    Indemnification: "Indemnification: Each party will indemnify the other against third-party claims for breach, negligence or IP infringement, subject to notice and defense requirements.",
+    Insurance: "Insurance: Contractor shall maintain general liability ($1M per occurrence), professional liability ($2M aggregate) and workers’ comp coverage as required by law.",
+    "Limitation of Liability": "Limitation of Liability: Neither party’s aggregate liability will exceed the total fees paid under this agreement, except for willful misconduct or gross negligence.",
+    "Service Levels": "Service Levels: Provider guarantees 99.9% uptime and will credit fees for any monthly downtime exceeding SLA targets.",
+    Warranties: "Warranties: Seller warrants that goods will conform to specifications for 12 months and will repair or replace defective items at no cost.",
+    "Non-Solicitation": "Non-Solicitation: For 12 months post-termination, neither party will solicit or hire the other’s employees or contractors.",
+    "Non-Disparagement": "Non-Disparagement: Both parties agree not to make adverse or negative public statements about the other following separation.",
+    DORA: "DORA: Parties shall comply with the EU Digital Operational Resilience Act..."
+};
+
 /**
  * Processes a sample document request from a spreadsheet row.
- * Reads request data, generates documents using an AI model,
- * saves them to a new folder in Google Drive, and provides feedback
- * in a "Status" column.
+ * Reads inputs, determines the workflow (sets or random), generates documents,
+ * saves them to Google Drive, and provides feedback in a "Status" column.
  *
  * @param {Object} e The event object from the onEdit trigger.
  */
@@ -23,8 +105,7 @@ function submitSampleRequest(e) {
         return;
     }
 
-    // --- REFINEMENT: Define a column map ---
-    // This makes the code resilient to changes in column order.
+    // --- CONFIGURATION ---
     const COLUMN_MAP = {
         EMAIL: 2,
         QUANTITY: 3,
@@ -32,13 +113,13 @@ function submitSampleRequest(e) {
         DOC_TYPES: 5,
         LANGUAGE: 6,
         FIRST_PARTY: 7,
-        STATUS: 8
+        CREATE_SETS: 8,
+        STATUS: 9
     };
-
     const statusRange = sheet.getRange(firstRow, COLUMN_MAP.STATUS);
 
     try {
-        statusRange.setValue("Processing..."); // Provide immediate feedback
+        statusRange.setValue("Processing...");
 
         // Securely get Root Folder ID from Script Properties
         const properties = PropertiesService.getScriptProperties();
@@ -47,17 +128,17 @@ function submitSampleRequest(e) {
             throw new Error("ROOT_FOLDER_ID is not set in Script Properties.");
         }
 
-        // Use the COLUMN_MAP to read data into a structured object
+        // Read all data from the spreadsheet row into an object
         const requestData = {
             email: sheet.getRange(firstRow, COLUMN_MAP.EMAIL).getValue(),
             quantity: parseInt(sheet.getRange(firstRow, COLUMN_MAP.QUANTITY).getValue(), 10),
             specialInstructions: sheet.getRange(firstRow, COLUMN_MAP.SPECIAL_INSTRUCTIONS).getValue(),
             docTypeString: sheet.getRange(firstRow, COLUMN_MAP.DOC_TYPES).getValue(),
             language: sheet.getRange(firstRow, COLUMN_MAP.LANGUAGE).getValue(),
-            firstParty: sheet.getRange(firstRow, COLUMN_MAP.FIRST_PARTY).getValue() 
+            firstParty: sheet.getRange(firstRow, COLUMN_MAP.FIRST_PARTY).getValue() || "Elston Enterprises",
+            createSets: sheet.getRange(firstRow, COLUMN_MAP.CREATE_SETS).getValue() === true
         };
 
-        // Validate the essential data from the object
         if (!requestData.email || !requestData.quantity || requestData.quantity <= 0) {
             throw new Error("Invalid or missing Email or Quantity.");
         }
@@ -68,47 +149,41 @@ function submitSampleRequest(e) {
         const rootFolder = DriveApp.getFolderById(rootFolderId);
         const subfolder = rootFolder.createFolder(folderName);
 
-        // Transfer folder ownership if applicable
-        try {
-            if (requestData.email.endsWith("@docusign.com")) {
-                subfolder.addEditor(requestData.email);
-                subfolder.setOwner(requestData.email);
-                Logger.log("Transferred ownership of folder to " + requestData.email);
-            }
-        } catch (ownershipError) {
-            Logger.log("Could not transfer ownership (this is common and can be ignored): " + ownershipError.message);
-        }
+        // --- CONDITIONAL WORKFLOW ---
+        let successMessage = "";
 
-        const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
+        if (requestData.createSets === true) {
+            // WORKFLOW 1: CREATE DOCUMENT SETS
+            const numSets = Math.floor(requestData.quantity / 5);
+            const docCount = numSets * 5;
+            const DOCUMENT_SET_TYPES = ["Non-Disclosure Agreement (NDA)", "Master Service Agreement (MSA)", "Statement Of Work (SOW)", "Statement Of Work (SOW)", "Change Order"];
 
-        // --- MAIN DOCUMENT GENERATION LOOP ---
-        for (let i = 0; i < requestData.quantity; i++) {
-            const rowData = generateFakeAgreementRow(requestData);
-
-            if (!rowData) {
-                Logger.log("No row data generated for iteration " + i);
-                continue;
+            if (numSets < 1) {
+                throw new Error("Quantity must be 5 or more to create sets.");
             }
 
-            const [, , agreementType, specialInstructions, language, industry, geography, firstParty, counterparty] = rowData;
-            const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty);
-
-            try {
-                const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
-                const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
-                const newFile = DriveApp.getFileById(newFileId);
-                newFile.moveTo(subfolder);
-                newFile.setDescription("Template generated for " + requestData.email);
-            } catch (docError) {
-                Logger.log(`Error generating doc for ${agreementType}: ${docError.message}`);
-                statusRange.setValue("Completed with some errors. Check logs.");
+            for (let i = 0; i < numSets; i++) {
+                const setCounterparty = COUNTERPARTIES[i % COUNTERPARTIES.length];
+                for (const docType of DOCUMENT_SET_TYPES) {
+                    const rowData = generateSetDocumentRow(requestData, docType, setCounterparty);
+                    processAndCreateFile(rowData, subfolder);
+                }
             }
+            successMessage = `Success! ${docCount} documents (${numSets} sets) created.`;
+
+        } else {
+            // WORKFLOW 2: CREATE INDIVIDUAL RANDOM DOCUMENTS
+            const docCount = requestData.quantity;
+            for (let i = 0; i < docCount; i++) {
+                const rowData = generateRandomDocumentRow(requestData);
+                processAndCreateFile(rowData, subfolder);
+            }
+            successMessage = `Success! ${docCount} individual documents created.`;
         }
 
         // --- SUCCESS ---
-        const successMessage = `Success! ${requestData.quantity} agreements in folder.`;
         statusRange.setValue(successMessage);
-        sendSlackNotification(requestData.email, `Generated ${requestData.quantity} agreements`, requestData.language, subfolder.getUrl());
+        sendSlackNotification(requestData.email, successMessage, requestData.language, subfolder.getUrl());
         Logger.log("Slack notification sent with folder link.");
 
     } catch (error) {
@@ -119,127 +194,16 @@ function submitSampleRequest(e) {
 }
 
 /**
- * Generates a single row of fake agreement data based on the user's request.
- *
- * @param {Object} requestData An object containing the user's request details,
- * including email, language, document type string, and special instructions.
- * @return {Array | null} An array of generated data for a single agreement, or null if no valid document types are found.
+ * Builds the core array of details (dates, terms, etc.) for an agreement.
+ * @param {string} agreementType The type of agreement being generated.
+ * @return {Array<string>} An array of generated detail strings.
  */
-function generateFakeAgreementRow(requestData) {
+function buildAgreementDetails(agreementType) {
     const today = new Date();
-
-    // --- Helpers ---
-    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
-    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
 
-    const DEFAULT_FIRST_PARTY = "Elston Enterprises";
-    const COUNTERPARTIES = [
-        "Keystone Dynamics",
-        "Weekend Ventures",
-        "Iver & Co.",
-        "Dancefloor Data",
-        "Torches & Co.",
-        "Arcade Corp.",
-        "Modern Age Ventures",
-        "Everlong Enterprises",
-        "High Violet Group",
-        "Little Lion Holdings",
-        "Xyloto Corp.",
-        "Dog Days Capital",
-        "Electric Feel Energy",
-        "Oracular Inc.",
-        "Impala Logistics",
-        "Coexist Innovations",
-        "Innerspeaker Inc.",
-        "After Hours Capital",
-        "Crystal Castle Holdings",
-        "El Camino Group",
-        "Wolf Gang Ventures",
-        "All Friends Co."
-    ];
-
-    // --- Static picklists & Mappings ---
-    const STANDARDIZED_DOC_TYPE_MAP = {
-        "NDA": "Non-Disclosure Agreement (NDA)",
-        "MSA": "Master Service Agreement (MSA)",
-        "SOW": "Statement Of Work (SOW)",
-        "Amendment": "Amendment",
-        "Lease": "Lease Agreement",
-        "License": "License Agreement",
-        "Services": "Services Agreement",
-        "Change Order": "Change Order",
-        "Purchase": "Purchase Agreement",
-        "Consulting": "Consulting Agreement",
-        "Offer Letter": "Offer Letter",
-        "Employee Separation": "Employee Separation Agreement",
-        "Contractor": "Contractor Agreement"
-    };
-
-    const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
-    const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
-    const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
-    const TERM_OPTIONS = [1, 2, 3];
-    const DAYS_NOTICE = [30, 60, 90];
-    const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
-    const PAYMENT_TERMS = ["30 days", "45 days", "60 days"];
-
-    const OBLIGATIONS = {
-        "Non-Disclosure Agreement (NDA)": ["Confidentiality", "Data Breach"],
-        "Master Service Agreement (MSA)": ["Compliance", "Indemnification", "Insurance", "Limitation of Liability", "Escalation", "DORA"],
-        "Statement Of Work (SOW)": ["Deliverables", "Escalation", "Limitation of Liability", "Indemnification", "Insurance"],
-        "Lease Agreement": ["Compliance", "Insurance", "Limitation of Liability"],
-        "License Agreement": ["Compliance", "Limitation of Liability", "Indemnification"],
-        "Services Agreement": ["Service Levels", "Escalation", "Indemnification", "Insurance", "Limitation of Liability"],
-        "Change Order": ["Deliverables", "Escalation"],
-        "Offer Letter": ["Confidentiality", "Non-Solicitation"],
-        "Purchase Agreement": ["Warranties", "Indemnification", "Insurance", "Limitation of Liability"],
-        "Consulting Agreement": ["Deliverables", "Indemnification", "Insurance", "Limitation of Liability"],
-        "Employee Separation Agreement": ["Confidentiality", "Non-Disparagement"],
-        "Contractor Agreement": ["Confidentiality", "Insurance", "Indemnification"]
-    };
-
-    const OBL_TEXT = {
-        Compliance: "Compliance: Both parties shall comply with all applicable laws, regulations and internal policies, including anti-corruption, export controls and data privacy rules.",
-        Confidentiality: "Confidentiality: All Confidential Information must be protected with at least the same degree of care as the party uses for its own, and not less than reasonable care.",
-        "Data Breach": "Data Breach: Each party will notify the other within 48 hours of any security incident affecting personal data and cooperate on remediation efforts.",
-        Deliverables: "Deliverables: All deliverables must meet the acceptance criteria defined in the SOW and be delivered in both draft and final formats.",
-        Escalation: "Escalation: Unresolved issues will escalate to executive sponsors within 5 business days, following the path: Project Manager → VP → CEO.",
-        Indemnification: "Indemnification: Each party will indemnify the other against third-party claims for breach, negligence or IP infringement, subject to notice and defense requirements.",
-        Insurance: "Insurance: Contractor shall maintain general liability ($1M per occurrence), professional liability ($2M aggregate) and workers’ comp coverage as required by law.",
-        "Limitation of Liability": "Limitation of Liability: Neither party’s aggregate liability will exceed the total fees paid under this agreement, except for willful misconduct or gross negligence.",
-        "Service Levels": "Service Levels: Provider guarantees 99.9% uptime and will credit fees for any monthly downtime exceeding SLA targets.",
-        Warranties: "Warranties: Seller warrants that goods will conform to specifications for 12 months and will repair or replace defective items at no cost.",
-        "Non-Solicitation": "Non-Solicitation: For 12 months post-termination, neither party will solicit or hire the other’s employees or contractors.",
-        "Non-Disparagement": "Non-Disparagement: Both parties agree not to make adverse or negative public statements about the other following separation.",
-        DORA: "DORA: Parties shall comply with the EU Digital Operational Resilience Act..."
-    };
-
-    const extractedTypes = extractDocTypes(requestData.docTypeString);
-
-    const standardizedTypes = extractedTypes
-        .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t)
-        .filter(t => !!OBLIGATIONS[t]);
-
-    if (standardizedTypes.length === 0) {
-        Logger.log("No valid document types found in: " + requestData.docTypeString);
-        return null;
-    }
-
-    const agreementType = pick(standardizedTypes);
-
-    // --- REFINEMENT: Access properties from the requestData object ---
-    const email = requestData.email;
-    const language = requestData.language;
-    const firstParty = requestData.firstParty || DEFAULT_FIRST_PARTY;
-    const industry = pick(INDUSTRIES);
-    const geography = pick(REGIONS);
-    const selectedCounterparty = pick(COUNTERPARTIES);
-
-    Logger.log(`Generating agreement for: ${email}, Type: ${agreementType}, Language: ${language}, Industry: ${industry}, Geography: ${geography}, First Party: ${firstParty}, Counterparty: ${selectedCounterparty}`);
-
-    // --- Determine dates & term ---
     const isNoTerm = NO_TERM_DOCS.includes(agreementType);
     let effectiveDate, termYears, termEndDate, renewalNoticePeriod, renewalNoticeDate, actionRequiredBy;
 
@@ -249,7 +213,7 @@ function generateFakeAgreementRow(requestData) {
     } else {
         const daysUntilExpiry = Math.floor(Math.random() * 180) + 1;
         termEndDate = addDays(today, daysUntilExpiry);
-        termYears = pick([1, 2, 3, 5]);
+        termYears = pick(TERM_OPTIONS);
         effectiveDate = new Date(termEndDate);
         effectiveDate.setFullYear(effectiveDate.getFullYear() - termYears);
         renewalNoticePeriod = pick(DAYS_NOTICE);
@@ -274,8 +238,43 @@ function generateFakeAgreementRow(requestData) {
             `Termination for Convenience Notice: ${pick(DAYS_NOTICE)} days`
         );
     }
+    return parts;
+}
 
+/**
+ * Generates data for a single, random document using global constants.
+ * @param {Object} requestData An object containing the user's request details.
+ * @return {Array | null} An array of generated data for a single agreement, or null if no valid document types are found.
+ */
+function generateRandomDocumentRow(requestData) {
+    // Helpers
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+
+    // --- Select Random Document Type & Parties ---
+    const firstParty = requestData.firstParty;
+    const counterparty = pick(COUNTERPARTIES); // Uses global constant
+
+    const extractedTypes = extractDocTypes(requestData.docTypeString);
+    const standardizedTypes = extractedTypes
+        .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t) // Uses global constant
+        .filter(t => !!OBLIGATIONS[t]); // Uses global constant
+
+    if (standardizedTypes.length === 0) {
+        Logger.log("No valid document types found for random generation in: " + requestData.docTypeString);
+        return null;
+    }
+    const agreementType = pick(standardizedTypes);
+
+    // --- Build Core Details ---
+    // Call the helper to get all the common date and term details
+    const parts = buildAgreementDetails(agreementType);
+
+    // --- Add SOW-specific details if applicable ---
     if (agreementType.includes("SOW")) {
+        const today = new Date();
         const totalValue = Math.floor(Math.random() * 450000) + 50000;
         const depositAmount = Math.floor(Math.random() * 20000) + 5000;
         const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
@@ -285,32 +284,99 @@ function generateFakeAgreementRow(requestData) {
         parts.push(
             `Total Contract Value: $${totalValue.toLocaleString()} USD`,
             `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
-            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`,
-            // --- REFINEMENT: Access specialInstructions from the requestData object ---
-            `Additional Notes: ${requestData.specialInstructions || ""}`
+            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`
         );
     }
 
-    const possible = OBLIGATIONS[agreementType] || [];
+    // --- Add Obligation Text ---
+    const possible = OBLIGATIONS[agreementType] || []; // Uses global constant
     const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
     selected.forEach(key => {
-        if (OBL_TEXT[key]) {
+        if (OBL_TEXT[key]) { // Uses global constant
             parts.push(OBL_TEXT[key]);
         }
     });
 
+    // --- Finalize and Return ---
     const specialInstructions = parts.join(", ");
+    const industry = pick(INDUSTRIES);   // Uses global constant
+    const geography = pick(REGIONS);     // Uses global constant
 
     return [
-        fmt(today),
-        email,
+        fmt(new Date()),
+        requestData.email,
         agreementType,
         specialInstructions,
-        language,
+        requestData.language,
         industry,
         geography,
         firstParty,
-        selectedCounterparty
+        counterparty
+    ];
+}
+
+/**
+ * Generates data for a specific document within a set.
+ * @param {Object} requestData An object containing the user's request details.
+ * @param {string} agreementType The specific type of agreement to generate.
+ * @param {string} counterparty The specific counterparty for this document set.
+ * @return {Array} An array of generated data for a single agreement.
+ */
+function generateSetDocumentRow(requestData, agreementType, counterparty) {
+    // Helpers
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+
+    // --- Use passed-in and request-specific data ---
+    const firstParty = requestData.firstParty;
+    // Note: agreementType and counterparty are received as arguments
+
+    // --- Build Core Details ---
+    // Call the helper to get all the common date and term details
+    const parts = buildAgreementDetails(agreementType);
+
+    // --- Add SOW-specific details if applicable ---
+    if (agreementType.includes("SOW")) {
+        const today = new Date();
+        const totalValue = Math.floor(Math.random() * 450000) + 50000;
+        const depositAmount = Math.floor(Math.random() * 20000) + 5000;
+        const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
+        const depositDue = addDays(today, Math.floor(Math.random() * 180));
+        const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
+
+        parts.push(
+            `Total Contract Value: $${totalValue.toLocaleString()} USD`,
+            `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
+            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`
+        );
+    }
+
+    // --- Add Obligation Text ---
+    const possible = OBLIGATIONS[agreementType] || []; // Uses global constant
+    const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
+    selected.forEach(key => {
+        if (OBL_TEXT[key]) { // Uses global constant
+            parts.push(OBL_TEXT[key]);
+        }
+    });
+
+    // --- Finalize and Return ---
+    const specialInstructions = parts.join(", ");
+    const industry = pick(INDUSTRIES); // Uses global constant
+    const geography = pick(REGIONS);   // Uses global constant
+
+    return [
+        fmt(new Date()),
+        requestData.email,
+        agreementType,
+        specialInstructions,
+        requestData.language,
+        industry,
+        geography,
+        firstParty,
+        counterparty
     ];
 }
 
@@ -327,7 +393,7 @@ function createPrompt(agreementType, industry, geography, language, specialInstr
     // 2. Assemble the final prompt parts.
     const documentSpecificRequirements = `Document-Specific Requirements:
 ${specificRequirements}
-For each document type, ensure that all sections are written as complete paragraphs, with no bullet points or numbered lists. Each section should flow naturally, fully explaining the legal concepts and providing clarity to the terms. Each document should reflect Elston Enterprise business and legal requirements as outlined. 
+For each document type, ensure that all sections are written as complete paragraphs, with no bullet points or numbered lists. Each section should flow naturally, fully explaining the legal concepts and providing clarity to the terms. Each document should reflect ${firstParty} business and legal requirements as outlined. 
 `;
 
     // 3. Build the complete prompt string.
@@ -380,11 +446,11 @@ If ${firstParty} is in solar panel installation and services, replace [industry]
 If the company is based in France, replace [country] with "France".
 If the agreement is being generated for a UK-based contract, replace [country] with "United Kingdom".
 For any other countries, replace [country] accordingly.
-Fictitious Company Name & Address:
- The Fictitious Company Name & Address will be automatically generated based on the [country] variable. For example:
-For France, the name might be "TechNova Systems" and the address might be "123 Rue de la Technologie, Paris, 75001".
-For United Kingdom, the name might be "GreenFuture Energy" and the address might be "45 High Street, London, EC1A 1BB".
- The generated company name and address will ensure a credible and localized appearance for the fictitious company.
+Fictitious Company Address:
+ The Fictitious CompanyAddress will be automatically generated based on the [country] variable. For example:
+For France, the address might be "123 Rue de la Technologie, Paris, 75001".
+For United Kingdom, the address might be "45 High Street, London, EC1A 1BB".
+ The generated company address will ensure a credible and localized appearance for the fictitious company.
 Execution Date:
  The Execution Date will be automatically generated within the current year, in the format of dd/mm/yyyy. The date should range from 01/01/yyyy to 31/12/yyyy (e.g., 15/11/2024).
 Jurisdiction City:
@@ -701,16 +767,16 @@ Signatures: This section provides space for authorized representatives of both p
     return specificRequirements;
 }
 
-function getPromptOutputFormat() {
+function getPromptOutputFormat(firstParty) {
 
     const outputFormat = `Output Format
-The output must be formatted as valid HTML, using markup such as h1, h2, sections or bullet points. Each document must be formatted in Arial, font size 11 or 12, with clearly structured headings (e.g., level 1, level 2, etc.). Missing sections or necessary content must be added depending on the document type. Ensure that all sections are appropriately detailed, maintaining the same quality and level of completeness, in line with legal best practices. Sections must follow an order based on market usage, ensuring that the document adheres to the typical structure of its type (e.g., agreements, contracts, amendments) as commonly practiced in the industry. Make up names for companies that include references to international famous musicians.
+The output must be formatted as valid HTML, using markup such as h1, h2, sections or bullet points. Each document must be formatted in Arial, font size 11 or 12, with clearly structured headings (e.g., level 1, level 2, etc.). Missing sections or necessary content must be added depending on the document type. Ensure that all sections are appropriately detailed, maintaining the same quality and level of completeness, in line with legal best practices. Sections must follow an order based on market usage, ensuring that the document adheres to the typical structure of its type (e.g., agreements, contracts, amendments) as commonly practiced in the industry. 
 
 Example Output:
 
 Master Service Agreement 
 
-This Master Service Agreement ("Agreement") is made effective as of November 22, 2022 (the "Effective Date") by and between Grounds Enterprises ("Company"), and Fictional Company Name ("Service Provider").
+This Master Service Agreement ("Agreement") is made effective as of November 22, 2022 (the "Effective Date") by and between ${firstParty} ("Company"), and ${counterparty} ("Service Provider").
 
 
 1. Services 
@@ -724,6 +790,41 @@ If selected, Service Provider will also be responsible for providing all necessa
 Ensure the HTML formatting is clean and adheres to standard practices. If possible, ensure spacing between paragraphs, and add bold for headlines.`;
 
     return outputFormat;
+}
+
+/**
+ * Takes generated row data, creates a prompt, calls the AI, and saves the file to the specified subfolder.
+ * @param {Array} rowData The array of data generated by a ...Row function.
+ * @param {GoogleAppsScript.Drive.Folder} subfolder The Google Drive folder to save the new file in.
+ */
+function processAndCreateFile(rowData, subfolder) {
+  if (!rowData) {
+    Logger.log("processAndCreateFile skipped because rowData was null.");
+    return;
+  }
+
+  // Unpack the data from the rowData array
+  const [ , , agreementType, specialInstructions, language, industry, geography, firstParty, counterparty] = rowData;
+
+  // Define the role and create the prompt
+  const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
+  const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty);
+
+  try {
+    // Call the AI and create the file in Drive
+    const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
+    const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
+    const newFile = DriveApp.getFileById(newFileId);
+    
+    // Move the file to the correct folder and set its description
+    newFile.moveTo(subfolder);
+    newFile.setDescription(`Template for ${firstParty} and ${counterparty}`);
+  } catch (error) {
+      Logger.log(`Failed to create document for ${agreementType} with ${counterparty}. Error: ${error.message}`);
+      // Note: The main function's catch block will report the error to the user.
+      // We could throw the error here to be more explicit if needed.
+      throw new Error(`Failed to process file for ${agreementType}.`);
+  }
 }
 
 /**
