@@ -7,113 +7,113 @@
  * @param {Object} e The event object from the onEdit trigger.
  */
 function submitSampleRequest(e) {
-  // Check if the trigger is a valid sheet edit
-  if (!e || !e.source) {
-    Logger.log("Function called without a valid event trigger.");
-    return;
-  }
-
-  const spreadsheet = e.source;
-  const sheet = spreadsheet.getActiveSheet();
-  const activeRange = spreadsheet.getActiveRange();
-  const firstRow = activeRange.getRow();
-
-  // Exit if the edit is on the wrong sheet or in the header row
-  if (sheet.getName() !== "Requests" || firstRow <= 1) {
-    return;
-  }
-
-  // --- REFINEMENT: Define a column map ---
-  // This makes the code resilient to changes in column order.
-  const COLUMN_MAP = {
-    EMAIL: 2,
-    QUANTITY: 3,
-    SPECIAL_INSTRUCTIONS: 4,
-    DOC_TYPES: 5,
-    LANGUAGE: 6,
-    STATUS: 7
-  };
-  
-  const statusRange = sheet.getRange(firstRow, COLUMN_MAP.STATUS);
-
-  try {
-    statusRange.setValue("Processing..."); // Provide immediate feedback
-
-    // Securely get Root Folder ID from Script Properties
-    const properties = PropertiesService.getScriptProperties();
-    const rootFolderId = properties.getProperty('ROOT_FOLDER_ID');
-    if (!rootFolderId) {
-        throw new Error("ROOT_FOLDER_ID is not set in Script Properties.");
+    // Check if the trigger is a valid sheet edit
+    if (!e || !e.source) {
+        Logger.log("Function called without a valid event trigger.");
+        return;
     }
 
-    // Use the COLUMN_MAP to read data into a structured object
-    const requestData = {
-      email: sheet.getRange(firstRow, COLUMN_MAP.EMAIL).getValue(),
-      quantity: parseInt(sheet.getRange(firstRow, COLUMN_MAP.QUANTITY).getValue(), 10),
-      specialInstructions: sheet.getRange(firstRow, COLUMN_MAP.SPECIAL_INSTRUCTIONS).getValue(),
-      docTypeString: sheet.getRange(firstRow, COLUMN_MAP.DOC_TYPES).getValue(),
-      language: sheet.getRange(firstRow, COLUMN_MAP.LANGUAGE).getValue(),
+    const spreadsheet = e.source;
+    const sheet = spreadsheet.getActiveSheet();
+    const activeRange = spreadsheet.getActiveRange();
+    const firstRow = activeRange.getRow();
+
+    // Exit if the edit is on the wrong sheet or in the header row
+    if (sheet.getName() !== "Requests" || firstRow <= 1) {
+        return;
+    }
+
+    // --- REFINEMENT: Define a column map ---
+    // This makes the code resilient to changes in column order.
+    const COLUMN_MAP = {
+        EMAIL: 2,
+        QUANTITY: 3,
+        SPECIAL_INSTRUCTIONS: 4,
+        DOC_TYPES: 5,
+        LANGUAGE: 6,
+        STATUS: 7
     };
 
-    // Validate the essential data from the object
-    if (!requestData.email || !requestData.quantity || requestData.quantity <= 0) {
-      throw new Error("Invalid or missing Email or Quantity.");
-    }
+    const statusRange = sheet.getRange(firstRow, COLUMN_MAP.STATUS);
 
-    // --- FOLDER SETUP ---
-    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-    const folderName = `${requestData.email}_${timestamp}`;
-    const rootFolder = DriveApp.getFolderById(rootFolderId);
-    const subfolder = rootFolder.createFolder(folderName);
-
-    // Transfer folder ownership if applicable
     try {
-      if (requestData.email.endsWith("@docusign.com")) {
-        subfolder.addEditor(requestData.email);
-        subfolder.setOwner(requestData.email);
-        Logger.log("Transferred ownership of folder to " + requestData.email);
-      }
-    } catch (ownershipError) {
-      Logger.log("Could not transfer ownership (this is common and can be ignored): " + ownershipError.message);
+        statusRange.setValue("Processing..."); // Provide immediate feedback
+
+        // Securely get Root Folder ID from Script Properties
+        const properties = PropertiesService.getScriptProperties();
+        const rootFolderId = properties.getProperty('ROOT_FOLDER_ID');
+        if (!rootFolderId) {
+            throw new Error("ROOT_FOLDER_ID is not set in Script Properties.");
+        }
+
+        // Use the COLUMN_MAP to read data into a structured object
+        const requestData = {
+            email: sheet.getRange(firstRow, COLUMN_MAP.EMAIL).getValue(),
+            quantity: parseInt(sheet.getRange(firstRow, COLUMN_MAP.QUANTITY).getValue(), 10),
+            specialInstructions: sheet.getRange(firstRow, COLUMN_MAP.SPECIAL_INSTRUCTIONS).getValue(),
+            docTypeString: sheet.getRange(firstRow, COLUMN_MAP.DOC_TYPES).getValue(),
+            language: sheet.getRange(firstRow, COLUMN_MAP.LANGUAGE).getValue(),
+        };
+
+        // Validate the essential data from the object
+        if (!requestData.email || !requestData.quantity || requestData.quantity <= 0) {
+            throw new Error("Invalid or missing Email or Quantity.");
+        }
+
+        // --- FOLDER SETUP ---
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        const folderName = `${requestData.email}_${timestamp}`;
+        const rootFolder = DriveApp.getFolderById(rootFolderId);
+        const subfolder = rootFolder.createFolder(folderName);
+
+        // Transfer folder ownership if applicable
+        try {
+            if (requestData.email.endsWith("@docusign.com")) {
+                subfolder.addEditor(requestData.email);
+                subfolder.setOwner(requestData.email);
+                Logger.log("Transferred ownership of folder to " + requestData.email);
+            }
+        } catch (ownershipError) {
+            Logger.log("Could not transfer ownership (this is common and can be ignored): " + ownershipError.message);
+        }
+
+        const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
+
+        // --- MAIN DOCUMENT GENERATION LOOP ---
+        for (let i = 0; i < requestData.quantity; i++) {
+            const rowData = generateFakeAgreementRow(requestData);
+
+            if (!rowData) {
+                Logger.log("No row data generated for iteration " + i);
+                continue;
+            }
+
+            const [, , agreementType, specialInstructions, language, industry, geography] = rowData;
+            const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions);
+
+            try {
+                const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
+                const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
+                const newFile = DriveApp.getFileById(newFileId);
+                newFile.moveTo(subfolder);
+                newFile.setDescription("Template generated for " + requestData.email);
+            } catch (docError) {
+                Logger.log(`Error generating doc for ${agreementType}: ${docError.message}`);
+                statusRange.setValue("Completed with some errors. Check logs.");
+            }
+        }
+
+        // --- SUCCESS ---
+        const successMessage = `Success! ${requestData.quantity} agreements in folder.`;
+        statusRange.setValue(successMessage);
+        sendSlackNotification(requestData.email, `Generated ${requestData.quantity} agreements`, requestData.language, subfolder.getUrl());
+        Logger.log("Slack notification sent with folder link.");
+
+    } catch (error) {
+        // Catch any error and write it to the Status column
+        Logger.log(`Error processing request in row ${firstRow}: ${error.message}`);
+        statusRange.setValue(`Error: ${error.message}`);
     }
-
-    const role = 'This GPT is designated to generate realistic sample agreements for use during AI demonstrations. It is tailored to create agreements with specific legal language and conditions that can be analyzed to return structured information.';
-
-    // --- MAIN DOCUMENT GENERATION LOOP ---
-    for (let i = 0; i < requestData.quantity; i++) {
-      const rowData = generateFakeAgreementRow(requestData);
-
-      if (!rowData) {
-        Logger.log("No row data generated for iteration " + i);
-        continue;
-      }
-
-      const [ , , agreementType, specialInstructions, language, industry, geography] = rowData;
-      const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions);
-
-      try {
-        const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
-        const newFileId = createFileInDriveV3(responseFromOpenAI, agreementType, language);
-        const newFile = DriveApp.getFileById(newFileId);
-        newFile.moveTo(subfolder);
-        newFile.setDescription("Template generated for " + requestData.email);
-      } catch (docError) {
-        Logger.log(`Error generating doc for ${agreementType}: ${docError.message}`);
-        statusRange.setValue("Completed with some errors. Check logs.");
-      }
-    }
-
-    // --- SUCCESS ---
-    const successMessage = `Success! ${requestData.quantity} agreements in folder.`;
-    statusRange.setValue(successMessage);
-    sendSlackNotification(requestData.email, `Generated ${requestData.quantity} agreements`, requestData.language, subfolder.getUrl());
-    Logger.log("Slack notification sent with folder link.");
-
-  } catch (error) {
-    // Catch any error and write it to the Status column
-    Logger.log(`Error processing request in row ${firstRow}: ${error.message}`);
-    statusRange.setValue(`Error: ${error.message}`);
-  }
 }
 
 /**
@@ -124,184 +124,217 @@ function submitSampleRequest(e) {
  * @return {Array | null} An array of generated data for a single agreement, or null if no valid document types are found.
  */
 function generateFakeAgreementRow(requestData) {
-  const today = new Date();
+    const today = new Date();
 
-  // --- Helpers ---
-  const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
-  const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
-  const pick = arr => arr[Math.floor(Math.random() * arr.length)];
-  const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+    // --- Helpers ---
+    const fmt = date => Utilities.formatDate(date, Session.getScriptTimeZone(), "MM/dd/yyyy");
+    const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
+    const pick = arr => arr[Math.floor(Math.random() * arr.length)];
+    const shuffle = arr => arr.sort(() => Math.random() - 0.5);
 
-  // --- Static picklists & Mappings ---
-  const STANDARDIZED_DOC_TYPE_MAP = {
-    "NDA": "Non-Disclosure Agreement (NDA)",
-    "MSA": "Master Service Agreement (MSA)",
-    "SOW": "Statement Of Work (SOW)",
-    "Amendment": "Amendment",
-    "Lease": "Lease Agreement",
-    "License": "License Agreement",
-    "Services": "Services Agreement",
-    "Change Order": "Change Order",
-    "Purchase": "Purchase Agreement",
-    "Consulting": "Consulting Agreement",
-    "Offer Letter": "Offer Letter",
-    "Employee Separation": "Employee Separation Agreement",
-    "Contractor": "Contractor Agreement"
-  };
+    // --- Static picklists & Mappings ---
+    const STANDARDIZED_DOC_TYPE_MAP = {
+        "NDA": "Non-Disclosure Agreement (NDA)",
+        "MSA": "Master Service Agreement (MSA)",
+        "SOW": "Statement Of Work (SOW)",
+        "Amendment": "Amendment",
+        "Lease": "Lease Agreement",
+        "License": "License Agreement",
+        "Services": "Services Agreement",
+        "Change Order": "Change Order",
+        "Purchase": "Purchase Agreement",
+        "Consulting": "Consulting Agreement",
+        "Offer Letter": "Offer Letter",
+        "Employee Separation": "Employee Separation Agreement",
+        "Contractor": "Contractor Agreement"
+    };
 
-  const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
-  const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
-  const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
-  const TERM_OPTIONS = [1, 2, 3];
-  const DAYS_NOTICE = [30, 60, 90];
-  const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
-  const PAYMENT_TERMS = ["30 days", "45 days", "60 days"];
+    const NO_TERM_DOCS = ["Offer Letter", "Employee Separation Agreement"];
+    const INDUSTRIES = ["Technology", "Healthcare", "Retail", "Manufacturing", "Education"];
+    const REGIONS = ["NAMER", "EMEA", "APAC", "LATAM"];
+    const TERM_OPTIONS = [1, 2, 3];
+    const DAYS_NOTICE = [30, 60, 90];
+    const ASSIGN_OPTS = ["Yes", "No, or consent req’d", "Yes, with conditions"];
+    const PAYMENT_TERMS = ["30 days", "45 days", "60 days"];
 
-  const OBLIGATIONS = {
-    "Non-Disclosure Agreement (NDA)": ["Confidentiality", "Data Breach"],
-    "Master Service Agreement (MSA)": ["Compliance", "Indemnification", "Insurance", "Limitation of Liability", "Escalation", "DORA"],
-    "Statement Of Work (SOW)": ["Deliverables", "Escalation", "Limitation of Liability", "Indemnification", "Insurance"],
-    "Lease Agreement": ["Compliance", "Insurance", "Limitation of Liability"],
-    "License Agreement": ["Compliance", "Limitation of Liability", "Indemnification"],
-    "Services Agreement": ["Service Levels", "Escalation", "Indemnification", "Insurance", "Limitation of Liability"],
-    "Change Order": ["Deliverables", "Escalation"],
-    "Offer Letter": ["Confidentiality", "Non-Solicitation"],
-    "Purchase Agreement": ["Warranties", "Indemnification", "Insurance", "Limitation of Liability"],
-    "Consulting Agreement": ["Deliverables", "Indemnification", "Insurance", "Limitation of Liability"],
-    "Employee Separation Agreement": ["Confidentiality", "Non-Disparagement"],
-    "Contractor Agreement": ["Confidentiality", "Insurance", "Indemnification"]
-  };
+    const OBLIGATIONS = {
+        "Non-Disclosure Agreement (NDA)": ["Confidentiality", "Data Breach"],
+        "Master Service Agreement (MSA)": ["Compliance", "Indemnification", "Insurance", "Limitation of Liability", "Escalation", "DORA"],
+        "Statement Of Work (SOW)": ["Deliverables", "Escalation", "Limitation of Liability", "Indemnification", "Insurance"],
+        "Lease Agreement": ["Compliance", "Insurance", "Limitation of Liability"],
+        "License Agreement": ["Compliance", "Limitation of Liability", "Indemnification"],
+        "Services Agreement": ["Service Levels", "Escalation", "Indemnification", "Insurance", "Limitation of Liability"],
+        "Change Order": ["Deliverables", "Escalation"],
+        "Offer Letter": ["Confidentiality", "Non-Solicitation"],
+        "Purchase Agreement": ["Warranties", "Indemnification", "Insurance", "Limitation of Liability"],
+        "Consulting Agreement": ["Deliverables", "Indemnification", "Insurance", "Limitation of Liability"],
+        "Employee Separation Agreement": ["Confidentiality", "Non-Disparagement"],
+        "Contractor Agreement": ["Confidentiality", "Insurance", "Indemnification"]
+    };
 
-  const OBL_TEXT = {
-    Compliance: "Compliance: Both parties shall comply with all applicable laws, regulations and internal policies, including anti-corruption, export controls and data privacy rules.",
-    Confidentiality: "Confidentiality: All Confidential Information must be protected with at least the same degree of care as the party uses for its own, and not less than reasonable care.",
-    "Data Breach": "Data Breach: Each party will notify the other within 48 hours of any security incident affecting personal data and cooperate on remediation efforts.",
-    Deliverables: "Deliverables: All deliverables must meet the acceptance criteria defined in the SOW and be delivered in both draft and final formats.",
-    Escalation: "Escalation: Unresolved issues will escalate to executive sponsors within 5 business days, following the path: Project Manager → VP → CEO.",
-    Indemnification: "Indemnification: Each party will indemnify the other against third-party claims for breach, negligence or IP infringement, subject to notice and defense requirements.",
-    Insurance: "Insurance: Contractor shall maintain general liability ($1M per occurrence), professional liability ($2M aggregate) and workers’ comp coverage as required by law.",
-    "Limitation of Liability": "Limitation of Liability: Neither party’s aggregate liability will exceed the total fees paid under this agreement, except for willful misconduct or gross negligence.",
-    "Service Levels": "Service Levels: Provider guarantees 99.9% uptime and will credit fees for any monthly downtime exceeding SLA targets.",
-    Warranties: "Warranties: Seller warrants that goods will conform to specifications for 12 months and will repair or replace defective items at no cost.",
-    "Non-Solicitation": "Non-Solicitation: For 12 months post-termination, neither party will solicit or hire the other’s employees or contractors.",
-    "Non-Disparagement": "Non-Disparagement: Both parties agree not to make adverse or negative public statements about the other following separation.",
-    DORA: "DORA: Parties shall comply with the EU Digital Operational Resilience Act..."
-  };
+    const OBL_TEXT = {
+        Compliance: "Compliance: Both parties shall comply with all applicable laws, regulations and internal policies, including anti-corruption, export controls and data privacy rules.",
+        Confidentiality: "Confidentiality: All Confidential Information must be protected with at least the same degree of care as the party uses for its own, and not less than reasonable care.",
+        "Data Breach": "Data Breach: Each party will notify the other within 48 hours of any security incident affecting personal data and cooperate on remediation efforts.",
+        Deliverables: "Deliverables: All deliverables must meet the acceptance criteria defined in the SOW and be delivered in both draft and final formats.",
+        Escalation: "Escalation: Unresolved issues will escalate to executive sponsors within 5 business days, following the path: Project Manager → VP → CEO.",
+        Indemnification: "Indemnification: Each party will indemnify the other against third-party claims for breach, negligence or IP infringement, subject to notice and defense requirements.",
+        Insurance: "Insurance: Contractor shall maintain general liability ($1M per occurrence), professional liability ($2M aggregate) and workers’ comp coverage as required by law.",
+        "Limitation of Liability": "Limitation of Liability: Neither party’s aggregate liability will exceed the total fees paid under this agreement, except for willful misconduct or gross negligence.",
+        "Service Levels": "Service Levels: Provider guarantees 99.9% uptime and will credit fees for any monthly downtime exceeding SLA targets.",
+        Warranties: "Warranties: Seller warrants that goods will conform to specifications for 12 months and will repair or replace defective items at no cost.",
+        "Non-Solicitation": "Non-Solicitation: For 12 months post-termination, neither party will solicit or hire the other’s employees or contractors.",
+        "Non-Disparagement": "Non-Disparagement: Both parties agree not to make adverse or negative public statements about the other following separation.",
+        DORA: "DORA: Parties shall comply with the EU Digital Operational Resilience Act..."
+    };
 
-  // --- REFINEMENT: Pull document types from the requestData object ---
-  const extractedTypes = [];
-  const categoryRegex = /\(([^)]+)\)/g;
-  let match;
-  // Use requestData.docTypeString instead of a separate argument
-  while ((match = categoryRegex.exec(requestData.docTypeString)) !== null) {
-    const docs = match[1].split(",").map(d => d.trim());
-    extractedTypes.push(...docs);
-  }
+    const extractedTypes = extractDocTypes(requestData.docTypeString);
 
-  const standardizedTypes = extractedTypes
-    .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t)
-    .filter(t => !!OBLIGATIONS[t]);
+    const standardizedTypes = extractedTypes
+        .map(t => STANDARDIZED_DOC_TYPE_MAP[t] || t)
+        .filter(t => !!OBLIGATIONS[t]);
 
-  if (standardizedTypes.length === 0) {
-    Logger.log("No valid document types found in: " + requestData.docTypeString);
-    return null;
-  }
-
-  const agreementType = pick(standardizedTypes);
-
-  // --- REFINEMENT: Access properties from the requestData object ---
-  const email = requestData.email;
-  const language = requestData.language;
-  const industry = pick(INDUSTRIES);
-  const geography = pick(REGIONS);
-
-  // --- Determine dates & term ---
-  const isNoTerm = NO_TERM_DOCS.includes(agreementType);
-  let effectiveDate, termYears, termEndDate, renewalNoticePeriod, renewalNoticeDate, actionRequiredBy;
-
-  if (isNoTerm) {
-    const daysAgo = pick([30, 60, 90, 180, 365]);
-    effectiveDate = addDays(today, -daysAgo);
-  } else {
-    const daysUntilExpiry = Math.floor(Math.random() * 180) + 1;
-    termEndDate = addDays(today, daysUntilExpiry);
-    termYears = pick([1, 2, 3, 5]);
-    effectiveDate = new Date(termEndDate);
-    effectiveDate.setFullYear(effectiveDate.getFullYear() - termYears);
-    renewalNoticePeriod = pick(DAYS_NOTICE);
-    renewalNoticeDate = addDays(termEndDate, -renewalNoticePeriod);
-    actionRequiredBy = addDays(today, Math.floor(Math.random() * 180));
-  }
-
-  const parts = [`Effective Date: ${fmt(effectiveDate)}`];
-
-  if (!isNoTerm) {
-    parts.push(
-      `Initial Term: ${termYears} year(s)`,
-      `Expiration Date: ${fmt(termEndDate)}`,
-      `Renewal Notice Period: ${renewalNoticePeriod} days`,
-      `Renewal Notice Date: ${fmt(renewalNoticeDate)}`,
-      `Action Required By: ${fmt(actionRequiredBy)}`,
-      `Assignment (General): ${pick(ASSIGN_OPTS)}`,
-      `Assignment (Change of Control): ${pick(ASSIGN_OPTS)}`,
-      `Assignment (Termination Rights): ${pick(["Yes", "No"])}`,
-      `Payment Terms: ${pick(PAYMENT_TERMS)}`,
-      `Termination for Cause Notice: ${pick(DAYS_NOTICE)} days`,
-      `Termination for Convenience Notice: ${pick(DAYS_NOTICE)} days`
-    );
-  }
-
-  if (agreementType.includes("SOW")) {
-    const totalValue = Math.floor(Math.random() * 450000) + 50000;
-    const depositAmount = Math.floor(Math.random() * 20000) + 5000;
-    const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
-    const depositDue = addDays(today, Math.floor(Math.random() * 180));
-    const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
-
-    parts.push(
-      `Total Contract Value: $${totalValue.toLocaleString()} USD`,
-      `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
-      `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`,
-      // --- REFINEMENT: Access specialInstructions from the requestData object ---
-      `Additional Notes: ${requestData.specialInstructions || ""}`
-    );
-  }
-
-  const possible = OBLIGATIONS[agreementType] || [];
-  const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
-  selected.forEach(key => {
-    if (OBL_TEXT[key]) {
-      parts.push(OBL_TEXT[key]);
+    if (standardizedTypes.length === 0) {
+        Logger.log("No valid document types found in: " + requestData.docTypeString);
+        return null;
     }
-  });
 
-  const specialInstructions = parts.join(", ");
+    const agreementType = pick(standardizedTypes);
 
-  return [
-    fmt(today),
-    email,
-    agreementType,
-    specialInstructions,
-    language,
-    industry,
-    geography
-  ];
+    // --- REFINEMENT: Access properties from the requestData object ---
+    const email = requestData.email;
+    const language = requestData.language;
+    const industry = pick(INDUSTRIES);
+    const geography = pick(REGIONS);
+
+    // --- Determine dates & term ---
+    const isNoTerm = NO_TERM_DOCS.includes(agreementType);
+    let effectiveDate, termYears, termEndDate, renewalNoticePeriod, renewalNoticeDate, actionRequiredBy;
+
+    if (isNoTerm) {
+        const daysAgo = pick([30, 60, 90, 180, 365]);
+        effectiveDate = addDays(today, -daysAgo);
+    } else {
+        const daysUntilExpiry = Math.floor(Math.random() * 180) + 1;
+        termEndDate = addDays(today, daysUntilExpiry);
+        termYears = pick([1, 2, 3, 5]);
+        effectiveDate = new Date(termEndDate);
+        effectiveDate.setFullYear(effectiveDate.getFullYear() - termYears);
+        renewalNoticePeriod = pick(DAYS_NOTICE);
+        renewalNoticeDate = addDays(termEndDate, -renewalNoticePeriod);
+        actionRequiredBy = addDays(today, Math.floor(Math.random() * 180));
+    }
+
+    const parts = [`Effective Date: ${fmt(effectiveDate)}`];
+
+    if (!isNoTerm) {
+        parts.push(
+            `Initial Term: ${termYears} year(s)`,
+            `Expiration Date: ${fmt(termEndDate)}`,
+            `Renewal Notice Period: ${renewalNoticePeriod} days`,
+            `Renewal Notice Date: ${fmt(renewalNoticeDate)}`,
+            `Action Required By: ${fmt(actionRequiredBy)}`,
+            `Assignment (General): ${pick(ASSIGN_OPTS)}`,
+            `Assignment (Change of Control): ${pick(ASSIGN_OPTS)}`,
+            `Assignment (Termination Rights): ${pick(["Yes", "No"])}`,
+            `Payment Terms: ${pick(PAYMENT_TERMS)}`,
+            `Termination for Cause Notice: ${pick(DAYS_NOTICE)} days`,
+            `Termination for Convenience Notice: ${pick(DAYS_NOTICE)} days`
+        );
+    }
+
+    if (agreementType.includes("SOW")) {
+        const totalValue = Math.floor(Math.random() * 450000) + 50000;
+        const depositAmount = Math.floor(Math.random() * 20000) + 5000;
+        const oneTimeAmount = Math.floor(Math.random() * 40000) + 10000;
+        const depositDue = addDays(today, Math.floor(Math.random() * 180));
+        const oneTimeDue = addDays(today, Math.floor(Math.random() * 180));
+
+        parts.push(
+            `Total Contract Value: $${totalValue.toLocaleString()} USD`,
+            `Deposit Amount: $${depositAmount.toLocaleString()} USD, Deposit Due: ${fmt(depositDue)}`,
+            `One-Time Payment: $${oneTimeAmount.toLocaleString()} USD, Due: ${fmt(oneTimeDue)}`,
+            // --- REFINEMENT: Access specialInstructions from the requestData object ---
+            `Additional Notes: ${requestData.specialInstructions || ""}`
+        );
+    }
+
+    const possible = OBLIGATIONS[agreementType] || [];
+    const selected = shuffle(possible).slice(0, pick([1, 2, 3]));
+    selected.forEach(key => {
+        if (OBL_TEXT[key]) {
+            parts.push(OBL_TEXT[key]);
+        }
+    });
+
+    const specialInstructions = parts.join(", ");
+
+    return [
+        fmt(today),
+        email,
+        agreementType,
+        specialInstructions,
+        language,
+        industry,
+        geography
+    ];
 }
 
 function createPrompt(agreementType, industry, geography, language, specialInstructions) {
 
+    // 1. Call all the modular helper functions to get the prompt sections.
+    const setup = getPromptSetup(agreementType, industry, geography);
+    const objective = getPromptObjective();
+    const instructions = getPromptInstructions();
+    const generalRequirements = getPromptGeneralRequirements();
+    const outputFormat = getPromptOutputFormat();
+    const specificRequirements = getPromptSpecifics(agreementType);
+
+    // 2. Assemble the final prompt parts.
+    const documentSpecificRequirements = `Document-Specific Requirements:
+${specificRequirements}
+For each document type, ensure that all sections are written as complete paragraphs, with no bullet points or numbered lists. Each section should flow naturally, fully explaining the legal concepts and providing clarity to the terms. Each document should reflect Elston Enterprise business and legal requirements as outlined. 
+`;
+
+    // 3. Build the complete prompt string.
+    const prompt = `
+Inputs:
+Agreement Type: [${agreementType}]
+Industry: [${industry}]
+Geography: [${geography}]
+Language: [${language}]
+Special Instructions: [${specialInstructions}]
+
+${setup}
+${objective}
+${instructions}
+${generalRequirements}
+${outputFormat}
+
+${documentSpecificRequirements}
+
+Instructions:
+
+1. Research agreements for the input Industry and Geography
+2. Review the Special Instructions. 
+3. Use this information to generate an agreement that provides a realistic representation of this type of agreement. DO NOT include any explanatory text before or after the agreement. 
+`;
+
+    console.log("Prompt" + prompt);
+    return prompt;
+}
+
+function getPromptSetup(agreementType, industry, geography) {
     const setup = `What it means to be a Sample Document Assistant
 This Sample Document Assistant is an expert in creating tailored legal documents containing realistic sample data and language. The assistant can generate agreements for any industry or geography, and will research as necessary to create sample agreements for demonstrations. The goal of these demonstrations is to ensure the audience that Docusign understands their business, and a realistic document including realistic language can help achieve that goal.
 
 Output
 Generate a .docx file that serves as a sample agreement for the specified type of legal agreement. This agreement will be tailored for a ${agreementType} for a ${industry} business in ${geography}, will be written in the language provided in the input, and include sample information for fictitious agreements. `;
+    return setup;
+}
 
-    const objective = `Objective:
-To generate several Word documents with contractual information in [Language]. These documents should reflect the specific context of Elston Enterprises, a company based in [Country], operating in the [industry] sector. Each document must be comprehensive, realistic, compliant with professional legal practices, and adapted to the company’s activities in [industry]. Where applicable, the documents must include relevant local regulations specific to the [industry] and [country], such as BaFin in Germany or GDPR in the EU. Additionally, all monetary values in the documents must use the currency consistent with the country where the agreement applies (e.g., euros for France, pounds for the UK, etc.). Any numbers should be written out in words, followed by the numerical form in parentheses, wherever possible (e.g., "thirty (30) days").Dates should be formatted according to the [country]’s standard date format (e.g., dd/mm/yyyy for France, mm/dd/yyyy for the United States, etc.).
-
-  `;
-
-    const instructions = `Instructions for Using the Variables:
+function getPromptInstructions() {
+    return `Instructions for Using the Variables:
 [Industry] Variable:
 The [industry] variable represents the type of business or sector in which Elston Enterprises operates. When using the script, [industry] should be replaced with the appropriate business type relevant to the context of the contract.
 For example:
@@ -327,8 +360,19 @@ United Kingdom: London
 Germany: Berlin
 United States: Washington, D.C.
   `;
+}
 
-    const generalRequirements = `General Requirements:
+function getPromptObjective() {
+
+    const objective = `Objective:
+To generate several Word documents with contractual information in [Language]. These documents should reflect the specific context of Elston Enterprises, a company based in [Country], operating in the [industry] sector. Each document must be comprehensive, realistic, compliant with professional legal practices, and adapted to the company’s activities in [industry]. Where applicable, the documents must include relevant local regulations specific to the [industry] and [country], such as BaFin in Germany or GDPR in the EU. Additionally, all monetary values in the documents must use the currency consistent with the country where the agreement applies (e.g., euros for France, pounds for the UK, etc.). Any numbers should be written out in words, followed by the numerical form in parentheses, wherever possible (e.g., "thirty (30) days").Dates should be formatted according to the [country]’s standard date format (e.g., dd/mm/yyyy for France, mm/dd/yyyy for the United States, etc.).
+
+  `;
+    return objective;
+}
+
+function getPromptGeneralRequirements() {
+    return `General Requirements:
 Level of Detail:
  All content must be extensively detailed and realistic. Each section must include several lines of paragraphs written in formal legal language.
  No bullet points or numbered lists are allowed in the content. Information should be presented in long paragraphs, fully explaining all terms and concepts.
@@ -367,31 +411,14 @@ Compliance with Local Laws: Tailor the agreements to comply with the legal frame
 Length and Detail: Each document should be sufficiently detailed, with a minimum of 6 pages where applicable, covering all necessary clauses comprehensively.
 Expand on Definitions and Explanations:
  Ensure that every key term or clause is thoroughly defined and explained in its full context. This includes adding detailed scenarios to make clauses more complex, as well as incorporating contingencies. For example, explain under what conditions a certain clause would be triggered, or how specific provisions could be amended if unforeseen circumstances arise. This expansion will increase the sentence length without losing clarity. Example: "The obligations of the parties under this Agreement shall include, but are not limited to, the timely provision of services as set forth in the Statement of Work ("SOW"), except in the event of force majeure, as outlined herein, in which case such obligations may be suspended for a period not exceeding thirty (30) days, or until such time as the event of force majeure has been resolved."
-Incorporate Detailed Examples and Case Studies: When describing specific terms, scenarios, or legal situations, add hypothetical examples or historical case studies to explain the applicability of the clause. These examples should be written as extended sentences explaining how each provision works in practice, based on industry-specific scenarios.  Example: "For example, if a delay in service provision occurs due to unforeseen technical issues, the parties agree to adhere to the following protocol: the Client shall provide Sample Company with a written notice, specifying the delay's nature and expected resolution time, and the parties shall meet to discuss any necessary amendments to the schedule, provided that the delay does not exceed [X] days in total."
+Incorporate Detailed Examples and Case Studies: When describing specific terms, scenarios, or legal situations, add hypothetical examples or historical case studies to explain the applicability of the clause. These examples should be written as extended sentences explaining how each provision works in practice, based on a specific-industry scenarios.  Example: "For example, if a delay in service provision occurs due to unforeseen technical issues, the parties agree to adhere to the following protocol: the Client shall provide Sample Company with a written notice, specifying the delay's nature and expected resolution time, and the parties shall meet to discuss any necessary amendments to the schedule, provided that the delay does not exceed [X] days in total."
 Use Legal Terminology in a Structured Manner: Incorporate complex legal terms such as "notwithstanding," "hereinafter," "whereas," "provided, however," and "subject to." These terms should be interwoven with conditional statements to convey nuanced meanings, making sentences longer and more detailed without sacrificing clarity.  Example: "Notwithstanding any provision to the contrary, in the event that the Client defaults on any payment obligation under this Agreement, Sample Company shall have the right, at its sole discretion, to suspend the provision of services until such time as the outstanding balance is cleared, provided, however, that such suspension shall not exceed [X] days, unless otherwise agreed by the parties in writing."
 Conditional and Subordinate Clauses: Introduce more conditional clauses (e.g., "provided that," "in the event that," "unless otherwise agreed") and subordinate clauses to increase sentence length and complexity. These clauses will allow you to describe various scenarios in detail and ensure that all contingencies are covered. Example: "In the event that any material breach of this Agreement occurs, and such breach is not cured within thirty (30) days of receiving written notice thereof, the non-breaching party shall have the right to terminate the Agreement immediately, unless the parties mutually agree to extend the cure period."
 Formalizing Modifiers and Descriptive Language: Use adjectives and adverbs that add formality and precision to your legal writing. For example, rather than simply stating an obligation, you could state it as an obligation that is "expressly mandated, as stipulated herein, under all circumstances unless modified by a written agreement duly executed by both parties." Example: "The Client shall pay the fees specified in the applicable Statement of Work (SOW), expressly acknowledging that the fees are due in full on the specified due date, unless otherwise mutually agreed upon in writing by the authorized representatives of both parties."
 Offer Detailed Justifications for Each Clause: Rather than stating a clause in isolation, explain its purpose in detail. For instance, instead of saying "The parties agree to confidentiality," elaborate by describing the potential consequences of violating confidentiality and why it is critical to safeguard proprietary information.  Example: "The parties acknowledge that any breach of confidentiality may result in significant harm to the disclosing party, including, but not limited to, loss of intellectual property, trade secrets, or business strategies. Therefore, the parties agree that confidentiality shall be maintained throughout the term of this Agreement and for a period of five (5) years following its termination, as failure to do so could expose the breaching party to substantial damages.`;
+}
 
-    const outputFormat = `Output Format
-The output must be formatted as valid HTML, using markup such as h1, h2, sections or bullet points. Each document must be formatted in Arial, font size 11 or 12, with clearly structured headings (e.g., level 1, level 2, etc.). Missing sections or necessary content must be added depending on the document type. Ensure that all sections are appropriately detailed, maintaining the same quality and level of completeness, in line with legal best practices. Sections must follow an order based on market usage, ensuring that the document adheres to the typical structure of its type (e.g., agreements, contracts, amendments) as commonly practiced in the industry. Make up names for companies that include references to international famous musicians.
-
-Example Output:
-
-Master Service Agreement 
-
-This Master Service Agreement ("Agreement") is made effective as of November 22, 2022 (the "Effective Date") by and between Grounds Enterprises ("Company"), and Fictional Company Name ("Service Provider").
-
-
-1. Services 
-Service Provider agrees to provide the coffee distibution services (the "Services") as outlined in one or more statements of work ("SOW") to be separately executed by the parties.
-
-2. Provision of Supplies
-If selected, Service Provider will also be responsible for providing all necessary cleaning supplies and equipment. Costs for these supplies will be reimbursed by Company as per the agreement in each SOW.
-
-...
-
-Ensure the HTML formatting is clean and adheres to standard practices. If possible, ensure spacing between paragraphs, and add bold for headlines.`;
+function getPromptSpecifics(agreementType) {
 
     let specificRequirements = '';
 
@@ -444,7 +471,6 @@ Confidentiality & Data Security: Reference to NDA or specific data-protection ob
 Governing Law & Dispute Resolution: Choice of law, venue, mediation/arbitration steps.
 Signatures: Signature blocks for authorized representatives of both parties.`;
             break;
-
         case 'Amendment':
             specificRequirements = `4. Amendment Structure :
 Original Agreement Reference: Identify the original agreement (name, date, parties) being amended.
@@ -456,7 +482,6 @@ Integration Clause: Statement that this amendment and the original document toge
 Governing Law & Jurisdiction: Confirm that the same choice of law/venue applies.
 Signatures & Dates: Signature lines and dates for both parties’ authorized representatives.`;
             break;
-
         case 'Lease':
             specificRequirements = `5. Lease Agreement Structure :
 Premises Description: Exact address and square footage of the leased space.
@@ -472,7 +497,6 @@ Termination: Early termination rights, penalties, and holdover provisions.
 Governing Law & Venue: Applicable law and dispute-resolution mechanism.
 Signatures: Authorized signature blocks for landlord and tenant.`;
             break;
-
         case 'License':
             specificRequirements = `6. License Agreement Structure :
 Grant of License: Define scope (rights granted, territory, exclusivity, duration).
@@ -488,7 +512,6 @@ Confidentiality & Data Security: Any data-handling rules or NDA cross-reference.
 Governing Law & Venue: Applicable jurisdiction.
 Signatures: Authorized representatives of licensor and licensee.`;
             break;
-
         case 'Services Agreement':
             specificRequirements = `7. Services Agreement Structure :
 Introduction: Identify the parties and the overall intent—to deliver [type of services].
@@ -507,7 +530,6 @@ Dispute Resolution: Mediation/arbitration process.
 Governing Law & Venue: Choice of law.
 Signatures: Blocks for both parties.`;
             break;
-
         case 'Change Order':
             specificRequirements = `8. Change Order Structure :
 Contract Reference: Cite the original SOW or Services Agreement by name and date.
@@ -521,7 +543,6 @@ Integration with Original Agreement: Statement that all other terms remain uncha
 Governing Law & Venue: Same jurisdiction as the original contract.
 Signatures & Dates: Authorized signatures for both parties.`;
             break;
-
         case 'Offer Letter':
             specificRequirements = `9. Offer Letter Structure :
 Position & Reporting: Job title, department, manager name and work location.
@@ -536,7 +557,6 @@ Governing Law: Employment law jurisdiction.
 Signature Block: Candidate and hiring manager signatures and dates.
 Include sign-on bonus with a clawback/repayment option based upon term of employment (i.e. you have to work for 6/12/24 months or your sign-on bonus is clawed back.)`;
             break;
-
         case 'Purchase Agreement':
             specificRequirements = `10. Purchase Agreement Structure :
 Parties & Definitions: Buyer, Seller and any key terms (e.g., “Products,” “Services”).
@@ -553,7 +573,6 @@ Termination & Suspension: Conditions for termination, effect on orders.
 Governing Law & Dispute Resolution: Venue and governing law.
 Signatures: Authorized signatures and dates for both parties.`;
             break;
-
         case 'Consulting Agreement':
             specificRequirements = `11. Consulting Agreement Structure :
 Engagement Scope: Define services to be provided by Consultant, deliverables, and objectives.
@@ -571,7 +590,6 @@ Non-Solicitation: Restrictions on poaching client’s employees.
 Governing Law & Venue: Applicable jurisdiction.
 Signatures: Authorized blocks for both parties.`;
             break;
-
         case 'Employee Separation Agreement':
             specificRequirements = `12. Employee Separation Agreement Structure :
 Parties & Effective Date: Employee and Employer names, and separation effective date.
@@ -586,7 +604,6 @@ Tax Treatment: How severance is taxed and any gross-up provisions.
 Governing Law & Dispute Resolution: Venue and applicable law.
 Signatures: Employee and authorized company representative.`;
             break;
-
         case 'Contractor Agreement':
             specificRequirements = `13. Contractor Agreement Structure :
 Engagement & Scope: Services to be performed by Contractor, deliverables and milestones.
@@ -638,43 +655,57 @@ Signatures: This section provides space for authorized representatives of both p
   Signatures: Include space for the authorized representatives of both parties to sign, confirming their agreement to the terms.`;
             break;
     }
+    return specificRequirements;
+}
 
-    const documentSpecificRequirements = `Document-Specific Requirements:
-${specificRequirements}
-For each document type, ensure that all sections are written as complete paragraphs, with no bullet points or numbered lists. Each section should flow naturally, fully explaining the legal concepts and providing clarity to the terms. Each document should reflect Elston Enterprise business and legal requirements as outlined. 
-`;
+function getPromptOutputFormat() {
 
-    const prompt = `
-Inputs:
-Agreement Type: [${agreementType}]
-Industry: [${industry}]
-Geography: [${geography}]
-Language: [${language}]
-Special Instructions: [${specialInstructions}]
+    const outputFormat = `Output Format
+The output must be formatted as valid HTML, using markup such as h1, h2, sections or bullet points. Each document must be formatted in Arial, font size 11 or 12, with clearly structured headings (e.g., level 1, level 2, etc.). Missing sections or necessary content must be added depending on the document type. Ensure that all sections are appropriately detailed, maintaining the same quality and level of completeness, in line with legal best practices. Sections must follow an order based on market usage, ensuring that the document adheres to the typical structure of its type (e.g., agreements, contracts, amendments) as commonly practiced in the industry. Make up names for companies that include references to international famous musicians.
 
-${setup}
-${objective}
-${instructions}
-${generalRequirements}
-${outputFormat}
+Example Output:
 
-${documentSpecificRequirements}
+Master Service Agreement 
 
-Instructions:
+This Master Service Agreement ("Agreement") is made effective as of November 22, 2022 (the "Effective Date") by and between Grounds Enterprises ("Company"), and Fictional Company Name ("Service Provider").
 
-1. Research agreements for the input Industry and Geography
-2. Review the Special Instructions. 
-3. Use this information to generate an agreement that provides a realistic representation of this type of agreement. DO NOT include any explanatory text before or after the agreement. 
-`;
-    console.log("Prompt" + prompt);
-    return prompt;
 
+1. Services 
+Service Provider agrees to provide the coffee distibution services (the "Services") as outlined in one or more statements of work ("SOW") to be separately executed by the parties.
+
+2. Provision of Supplies
+If selected, Service Provider will also be responsible for providing all necessary cleaning supplies and equipment. Costs for these supplies will be reimbursed by Company as per the agreement in each SOW.
+
+...
+
+Ensure the HTML formatting is clean and adheres to standard practices. If possible, ensure spacing between paragraphs, and add bold for headlines.`;
+
+    return outputFormat;
+}
+
+/**
+ * Extracts individual document types from a formatted string.
+ * @param {string} docTypeString The string, e.g., "Standard (NDA, MSA)".
+ * @return {Array<string>} An array of types, e.g., ["NDA", "MSA"].
+ */
+function extractDocTypes(docTypeString) {
+    const individualDocTypes = [];
+    if (!docTypeString) {
+        return individualDocTypes;
+    }
+
+    const categoryRegex = /\(([^)]+)\)/g;
+    let match;
+    while ((match = categoryRegex.exec(docTypeString)) !== null) {
+        const docsInCategory = match[1].split(",").map(type => type.trim());
+        individualDocTypes.push(...docsInCategory);
+    }
+    return individualDocTypes;
 }
 
 function generateContractNumber() {
     const randomPart = Math.floor(Math.random() * 100000).toString().padStart(5, '0'); // Random 5-digit number
     const contractNumber = `CN-${randomPart}`;
-    Logger.log(contractNumber);
     return contractNumber;
 }
 
