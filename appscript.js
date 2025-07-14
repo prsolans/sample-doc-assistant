@@ -31,7 +31,8 @@ function submitSampleRequest(e) {
         SPECIAL_INSTRUCTIONS: 4,
         DOC_TYPES: 5,
         LANGUAGE: 6,
-        STATUS: 7
+        FIRST_PARTY: 7,
+        STATUS: 8
     };
 
     const statusRange = sheet.getRange(firstRow, COLUMN_MAP.STATUS);
@@ -53,6 +54,7 @@ function submitSampleRequest(e) {
             specialInstructions: sheet.getRange(firstRow, COLUMN_MAP.SPECIAL_INSTRUCTIONS).getValue(),
             docTypeString: sheet.getRange(firstRow, COLUMN_MAP.DOC_TYPES).getValue(),
             language: sheet.getRange(firstRow, COLUMN_MAP.LANGUAGE).getValue(),
+            firstParty: sheet.getRange(firstRow, COLUMN_MAP.FIRST_PARTY).getValue() 
         };
 
         // Validate the essential data from the object
@@ -88,8 +90,8 @@ function submitSampleRequest(e) {
                 continue;
             }
 
-            const [, , agreementType, specialInstructions, language, industry, geography] = rowData;
-            const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions);
+            const [, , agreementType, specialInstructions, language, industry, geography, firstParty, counterparty] = rowData;
+            const prompt = createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty);
 
             try {
                 const responseFromOpenAI = PreSalesOpenAI.executePrompt4o(role, prompt);
@@ -131,6 +133,32 @@ function generateFakeAgreementRow(requestData) {
     const addDays = (date, days) => new Date(date.getTime() + days * 24 * 60 * 60 * 1000);
     const pick = arr => arr[Math.floor(Math.random() * arr.length)];
     const shuffle = arr => arr.sort(() => Math.random() - 0.5);
+
+    const DEFAULT_FIRST_PARTY = "Elston Enterprises";
+    const COUNTERPARTIES = [
+        "Keystone Dynamics",
+        "Weekend Ventures",
+        "Iver & Co.",
+        "Dancefloor Data",
+        "Torches & Co.",
+        "Arcade Corp.",
+        "Modern Age Ventures",
+        "Everlong Enterprises",
+        "High Violet Group",
+        "Little Lion Holdings",
+        "Xyloto Corp.",
+        "Dog Days Capital",
+        "Electric Feel Energy",
+        "Oracular Inc.",
+        "Impala Logistics",
+        "Coexist Innovations",
+        "Innerspeaker Inc.",
+        "After Hours Capital",
+        "Crystal Castle Holdings",
+        "El Camino Group",
+        "Wolf Gang Ventures",
+        "All Friends Co."
+    ];
 
     // --- Static picklists & Mappings ---
     const STANDARDIZED_DOC_TYPE_MAP = {
@@ -204,8 +232,12 @@ function generateFakeAgreementRow(requestData) {
     // --- REFINEMENT: Access properties from the requestData object ---
     const email = requestData.email;
     const language = requestData.language;
+    const firstParty = requestData.firstParty || DEFAULT_FIRST_PARTY;
     const industry = pick(INDUSTRIES);
     const geography = pick(REGIONS);
+    const selectedCounterparty = pick(COUNTERPARTIES);
+
+    Logger.log(`Generating agreement for: ${email}, Type: ${agreementType}, Language: ${language}, Industry: ${industry}, Geography: ${geography}, First Party: ${firstParty}, Counterparty: ${selectedCounterparty}`);
 
     // --- Determine dates & term ---
     const isNoTerm = NO_TERM_DOCS.includes(agreementType);
@@ -276,19 +308,21 @@ function generateFakeAgreementRow(requestData) {
         specialInstructions,
         language,
         industry,
-        geography
+        geography,
+        firstParty,
+        selectedCounterparty
     ];
 }
 
-function createPrompt(agreementType, industry, geography, language, specialInstructions) {
+function createPrompt(agreementType, industry, geography, language, specialInstructions, firstParty, counterparty) {
 
     // 1. Call all the modular helper functions to get the prompt sections.
     const setup = getPromptSetup(agreementType, industry, geography);
-    const objective = getPromptObjective();
-    const instructions = getPromptInstructions();
+    const objective = getPromptObjective(firstParty);
+    const instructions = getPromptInstructions(firstParty);
     const generalRequirements = getPromptGeneralRequirements();
     const outputFormat = getPromptOutputFormat();
-    const specificRequirements = getPromptSpecifics(agreementType);
+    const specificRequirements = getPromptSpecifics(agreementType, firstParty, counterparty);
 
     // 2. Assemble the final prompt parts.
     const documentSpecificRequirements = `Document-Specific Requirements:
@@ -320,7 +354,7 @@ Instructions:
 3. Use this information to generate an agreement that provides a realistic representation of this type of agreement. DO NOT include any explanatory text before or after the agreement. 
 `;
 
-    console.log("Prompt" + prompt);
+    Logger.log("Document Specific Requirements" + documentSpecificRequirements);
     return prompt;
 }
 
@@ -333,15 +367,15 @@ Generate a .docx file that serves as a sample agreement for the specified type o
     return setup;
 }
 
-function getPromptInstructions() {
+function getPromptInstructions(firstParty) {
     return `Instructions for Using the Variables:
 [Industry] Variable:
-The [industry] variable represents the type of business or sector in which Elston Enterprises operates. When using the script, [industry] should be replaced with the appropriate business type relevant to the context of the contract.
+The [industry] variable represents the type of business or sector in which ${firstParty} operates. When using the script, [industry] should be replaced with the appropriate business type relevant to the context of the contract.
 For example:
-If Elston Enterprises operates in software development, replace [industry] with "software development".
-If Elston Enterprises is in solar panel installation and services, replace [industry] with "solar panel services".
+If ${firstParty} operates in software development, replace [industry] with "software development".
+If ${firstParty} is in solar panel installation and services, replace [industry] with "solar panel services".
 [Country] Variable:
- The [country] variable should be replaced with only one country name where Elston Enterprises is based or where the agreement is being applied. This will ensure that the document’s content, including regulations, currency, and date format, aligns with the legal requirements of the country.
+ The [country] variable should be replaced with only one country name where ${firstParty} is based or where the agreement is being applied. This will ensure that the document’s content, including regulations, currency, and date format, aligns with the legal requirements of the country.
  For example:
 If the company is based in France, replace [country] with "France".
 If the agreement is being generated for a UK-based contract, replace [country] with "United Kingdom".
@@ -362,10 +396,10 @@ United States: Washington, D.C.
   `;
 }
 
-function getPromptObjective() {
+function getPromptObjective(firstParty) {
 
     const objective = `Objective:
-To generate several Word documents with contractual information in [Language]. These documents should reflect the specific context of Elston Enterprises, a company based in [Country], operating in the [industry] sector. Each document must be comprehensive, realistic, compliant with professional legal practices, and adapted to the company’s activities in [industry]. Where applicable, the documents must include relevant local regulations specific to the [industry] and [country], such as BaFin in Germany or GDPR in the EU. Additionally, all monetary values in the documents must use the currency consistent with the country where the agreement applies (e.g., euros for France, pounds for the UK, etc.). Any numbers should be written out in words, followed by the numerical form in parentheses, wherever possible (e.g., "thirty (30) days").Dates should be formatted according to the [country]’s standard date format (e.g., dd/mm/yyyy for France, mm/dd/yyyy for the United States, etc.).
+To generate several Word documents with contractual information in [Language]. These documents should reflect the specific context of ${firstParty}, a company based in [Country], operating in the [industry] sector. Each document must be comprehensive, realistic, compliant with professional legal practices, and adapted to the company’s activities in [industry]. Where applicable, the documents must include relevant local regulations specific to the [industry] and [country], such as BaFin in Germany or GDPR in the EU. Additionally, all monetary values in the documents must use the currency consistent with the country where the agreement applies (e.g., euros for France, pounds for the UK, etc.). Any numbers should be written out in words, followed by the numerical form in parentheses, wherever possible (e.g., "thirty (30) days").Dates should be formatted according to the [country]’s standard date format (e.g., dd/mm/yyyy for France, mm/dd/yyyy for the United States, etc.).
 
   `;
     return objective;
@@ -418,16 +452,16 @@ Formalizing Modifiers and Descriptive Language: Use adjectives and adverbs that 
 Offer Detailed Justifications for Each Clause: Rather than stating a clause in isolation, explain its purpose in detail. For instance, instead of saying "The parties agree to confidentiality," elaborate by describing the potential consequences of violating confidentiality and why it is critical to safeguard proprietary information.  Example: "The parties acknowledge that any breach of confidentiality may result in significant harm to the disclosing party, including, but not limited to, loss of intellectual property, trade secrets, or business strategies. Therefore, the parties agree that confidentiality shall be maintained throughout the term of this Agreement and for a period of five (5) years following its termination, as failure to do so could expose the breaching party to substantial damages.`;
 }
 
-function getPromptSpecifics(agreementType) {
+function getPromptSpecifics(agreementType, firstParty, counterparty) {
 
     let specificRequirements = '';
 
     switch (agreementType) {
         case 'Non-Disclosure Agreement (NDA)':
             specificRequirements = `1. Non-Disclosure Agreement (NDA) Structure :
-Introduction: The NDA must explain the purpose of the agreement, which is to protect confidential information exchanged between the parties, particularly relating to [industry] services (e.g., software solutions, solar panel services) provided by Elston Enterprises.
-Parties Involved: Elston Enterprises and a credible fictitious company, with full legal details such as registration number and address.
-Definition of Confidential Information: A detailed explanation of what constitutes confidential information. This should include proprietary technical data, software code, algorithms, business strategies, and client information shared in confidence by Elston Enterprises.
+Introduction: The NDA must explain the purpose of the agreement, which is to protect confidential information exchanged between the parties, particularly relating to [industry] services (e.g., software solutions, solar panel services) provided by ${firstParty}.
+Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
+Definition of Confidential Information: A detailed explanation of what constitutes confidential information. This should include proprietary technical data, software code, algorithms, business strategies, and client information shared in confidence by ${firstParty}.
 Obligations of the Parties: Extensive obligations should be outlined to ensure confidentiality and to limit the use of shared information solely for the purpose of evaluating or carrying out the business relationship.
 Duration of Confidentiality Obligation: Typically, five (5) years after termination of the agreement, unless a different period is agreed upon.
 Exceptions to Confidentiality: Publicly available information, information that becomes available to the receiving party through lawful means from a third party, or information that is independently developed without reference to the confidential data.
@@ -438,7 +472,7 @@ Signatures: Space for names, titles, and signatures of authorized representative
             break;
         case 'Master Service Agreement (MSA)':
             specificRequirements = `2. Master Service Agreement (MSA) Structure :
-Introduction: Explains the roles of Elston Enterprises and the other party, outlining the scope of services provided (e.g., software support, solar panel maintenance).
+Introduction: Explains the roles of ${firstParty} and ${counterparty}, outlining the scope of services provided (e.g., software support, solar panel maintenance).
 Scope of Services: Detailed descriptions of services provided, including maintenance, consulting, and delivery timelines.
 Orders and Statements of Work (SOW): Details on how Statements of Work (SOW) will be issued, outlining deliverables, costs, and performance standards.
 Payment Terms: Payment schedules, penalties for delays, billing terms, and currency specifications. Include terms such as Annual Contract Value, Total Contract Value, Late Fees Apply, and Late Fee % where applicable.
@@ -459,7 +493,7 @@ DORA Compliance: Establish and maintain an ICT risk-management framework aligned
             break;
         case 'Statement Of Work (SOW)':
             specificRequirements = `3. Statement Of Work (SOW) Structure :
-Introduction: Reference the underlying Master Agreement and explain the purpose of this SOW—to define deliverables and responsibilities for [Client] and [Contractor].
+Introduction: Reference the underlying Master Agreement and explain the purpose of this SOW—to define deliverables and responsibilities for ${firstParty} (first party) and ${counterparty} (counter party).
 Project Overview: High-level summary of objectives, goals and business drivers.
 Parties Involved: Full legal names, addresses and contact info for both Client and Contractor.
 Scope of Work & Deliverables: Detailed list of tasks, milestones, deliverables and acceptance criteria.
@@ -473,6 +507,7 @@ Signatures: Signature blocks for authorized representatives of both parties.`;
             break;
         case 'Amendment':
             specificRequirements = `4. Amendment Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Original Agreement Reference: Identify the original agreement (name, date, parties) being amended.
 Recitals: Brief statements explaining the background and purpose of the amendment.
 Amending Provisions: Exactly which clauses or sections are changed—quote old text and provide new text.
@@ -484,6 +519,7 @@ Signatures & Dates: Signature lines and dates for both parties’ authorized rep
             break;
         case 'Lease':
             specificRequirements = `5. Lease Agreement Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Premises Description: Exact address and square footage of the leased space.
 Term & Renewal Options: Lease commencement, expiration, any renewal terms and notice periods.
 Rent & Additional Charges: Base rent, escalation clauses, CAM charges, utilities, taxes, and security deposit amount.
@@ -499,6 +535,7 @@ Signatures: Authorized signature blocks for landlord and tenant.`;
             break;
         case 'License':
             specificRequirements = `6. License Agreement Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Grant of License: Define scope (rights granted, territory, exclusivity, duration).
 Restrictions: Prohibited actions (e.g., no sublicensing, reverse engineering).
 Consideration & Payment: License fees, payment schedule, audit rights.
@@ -514,6 +551,7 @@ Signatures: Authorized representatives of licensor and licensee.`;
             break;
         case 'Services Agreement':
             specificRequirements = `7. Services Agreement Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Introduction: Identify the parties and the overall intent—to deliver [type of services].
 Scope of Services: Detailed description of services, deliverables, and service levels/KPIs.
 Duration & Termination: Contract period, renewal terms, termination for convenience and for cause.
@@ -532,8 +570,9 @@ Signatures: Blocks for both parties.`;
             break;
         case 'Change Order':
             specificRequirements = `8. Change Order Structure :
+            
 Contract Reference: Cite the original SOW or Services Agreement by name and date.
-Parties: Legal names and addresses of client and contractor.
+Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Change Description: Detailed narrative of scope changes, new tasks or omissions.
 Impact Analysis: Effects on timeline, milestones and deliverables.
 Revised Schedule & Milestones: Updated dates for each deliverable or phase.
@@ -545,6 +584,7 @@ Signatures & Dates: Authorized signatures for both parties.`;
             break;
         case 'Offer Letter':
             specificRequirements = `9. Offer Letter Structure :
+            Parties Involved: The agreement is between ${firstParty} and an individual prospective employee.
 Position & Reporting: Job title, department, manager name and work location.
 Start Date & Employment Type: Full-time/part-time, exempt/non-exempt, at-will statement.
 Compensation: Base salary, bonus eligibility, equity grant details (if any).
@@ -559,6 +599,7 @@ Include sign-on bonus with a clawback/repayment option based upon term of employ
             break;
         case 'Purchase Agreement':
             specificRequirements = `10. Purchase Agreement Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Parties & Definitions: Buyer, Seller and any key terms (e.g., “Products,” “Services”).
 Sale & Purchase: Detailed description of goods/services, quantities, quality standards.
 Purchase Price & Payment Terms: Price, currency, taxes, payment schedule, late fees.
@@ -575,6 +616,7 @@ Signatures: Authorized signatures and dates for both parties.`;
             break;
         case 'Consulting Agreement':
             specificRequirements = `11. Consulting Agreement Structure :
+            Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Engagement Scope: Define services to be provided by Consultant, deliverables, and objectives.
 Term & Termination: Start date, duration, renewal options, and termination rights.
 Fees & Payment: Consulting rates (hourly/project), invoicing schedule, payment terms, and expense reimbursement.
@@ -592,7 +634,7 @@ Signatures: Authorized blocks for both parties.`;
             break;
         case 'Employee Separation Agreement':
             specificRequirements = `12. Employee Separation Agreement Structure :
-Parties & Effective Date: Employee and Employer names, and separation effective date.
+Parties & Effective Date: ${firstParty} and Employee names, and separation effective date.
 Separation Terms: Last day of employment, pay in lieu of notice, severance package details.
 Release of Claims: Employee’s waiver of legal claims in exchange for consideration.
 Confidentiality & Non-Disclosure: Ongoing obligations to protect company information.
@@ -621,6 +663,7 @@ Signatures: Authorized representatives of both parties.`;
         case 'SLA':
             specificRequirements = `14. Service Level Agreement (SLA) Structure :
 Introduction: Describes the objective of the SLA, which is to define expectations for service quality and performance.
+Parties Involved: The agreement is between ${firstParty} and ${counterparty}, with full legal details such as registration number and address.
 Parties and Scope: Includes details of the parties involved and a description of the services covered (e.g., software uptime guarantees).
 Service Level Commitments: Detailed metrics (e.g., 99.9% uptime) and response times for issues.
 Penalties for Non-Compliance: Escalating penalties for service failures.
@@ -630,8 +673,8 @@ Signatures: Space for both parties’ representatives to sign.`;
             break;
         case 'FSA':
             specificRequirements = `15. Framework Service Agreement (FSA) Structure :
-Introduction: This section sets the foundation for an ongoing service delivery relationship between Elston Enterprises and the client. The FSA outlines the terms under which services will be provided over a set period, often for multiple projects or service engagements. It defines the general terms, including the rights and obligations of both parties, and serves as the overarching agreement that governs individual Statements of Work (SOW) or project-specific agreements.
-Parties and Objectives: This section provides details on both Elston Enterprises and the client. It includes the official names and addresses of the contracting parties, as well as a description of the scope of services covered under the framework. This could include ongoing support, maintenance, consulting, or other service offerings relevant to the [industry] (e.g., software development, solar panel services). The objectives should clarify the mutual intentions of both parties in entering this agreement.
+Introduction: This section sets the foundation for an ongoing service delivery relationship between ${firstParty} and the client. The FSA outlines the terms under which services will be provided over a set period, often for multiple projects or service engagements. It defines the general terms, including the rights and obligations of both parties, and serves as the overarching agreement that governs individual Statements of Work (SOW) or project-specific agreements.
+Parties and Objectives: This section provides details on both ${firstParty} and the client. It includes the official names and addresses of the contracting parties, as well as a description of the scope of services covered under the framework. This could include ongoing support, maintenance, consulting, or other service offerings relevant to the [industry] (e.g., software development, solar panel services). The objectives should clarify the mutual intentions of both parties in entering this agreement.
 Key Terms and Conditions: This section covers payment terms, including billing schedules, milestones, and any performance-linked payment mechanisms.  It should also detail renewal processes, including conditions for the extension of the agreement, the automatic renewal clause (if applicable), and procedures for amending or terminating the agreement after the initial term.
  Any conditions for project-specific agreements under the framework should be outlined here. This includes how each individual project or service request will be structured, including Statement of Work (SOW) issuance, deliverables, and agreed timelines.
 Risk Management and Liability: This section should specify limitations of liability for both parties, addressing the maximum amount either party can be held liable for in the event of a breach or other failure to perform under the agreement.  Include risk-sharing mechanisms, such as indemnification clauses, ensuring that each party is protected from legal or financial consequences resulting from third-party claims.  Additionally, outline any exclusions to liability, particularly where force majeure events may limit or suspend performance.
